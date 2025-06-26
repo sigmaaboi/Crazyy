@@ -1,3 +1,4 @@
+----- Crazy hub
 -- Auto join variables
 local autoJoin5v5 = false
 local autoJoin3v3 = false
@@ -35,10 +36,25 @@ local lastMapCenterTime = 0
 local teleportCount = 0
 local lastTeleportTime = 0
 
+-- NEW: Combat system variables
+local autoAttackEnabled = false
+local aimLockEnabled = false
+local enemyVisualsEnabled = false
+local wallCheckEnabled = true
+local attackRange = 50
+local aimSmoothness = 0.3
+local autoFireRate = 0.1
+local lastAttackTime = 0
+local currentTarget = nil
+local enemyOutlines = {}
+local activateSkillRemotePath = "RemoteService/Remotes/ActivateSkill/E"
+local ActivateSkillRemote = nil
+local remotesReady = false
+
 -- Config variables (Updated structure)
 local autoLoadConfig = true
 local currentConfigName = "default"
-local hubFolder = "CrazyHub"
+local hubFolder = "Crazy-Hub"
 local configsFolder = hubFolder .. "/configs"
 local autoLoadFile = hubFolder .. "/auto_load.txt"
 
@@ -164,16 +180,11 @@ end
 
 -- FIXED: Function to calculate map center dynamically with SAFE HEIGHT (Y: 66)
 local function calculateMapCenter(mapName)
-    print("[DEBUG] Calculating center for map:", mapName)
-    
     local success, result = pcall(function()
         local mapFolder = workspace:FindFirstChild(mapName)
         if not mapFolder then
-            print("[DEBUG] Map folder not found:", mapName)
             return mapSafePositions[mapName] or Vector3.new(0, 66, 0)
         end
-        
-        print("[DEBUG] Found map folder:", mapFolder.Name)
         
         local minX, maxX = math.huge, -math.huge
         local minZ, maxZ = math.huge, -math.huge
@@ -204,8 +215,6 @@ local function calculateMapCenter(mapName)
         
         scanParts(mapFolder)
         
-        print("[DEBUG] Scanned", partCount, "parts")
-        
         if partCount > 0 then
             -- Calculate center point with FIXED SAFE HEIGHT
             local centerX = (minX + maxX) / 2
@@ -213,27 +222,21 @@ local function calculateMapCenter(mapName)
             local centerZ = (minZ + maxZ) / 2
             
             local center = Vector3.new(centerX, centerY, centerZ)
-            print("[DEBUG] Calculated center with safe height:", center)
             return center
         else
-            print("[DEBUG] No valid parts found, using fallback")
             return mapSafePositions[mapName] or Vector3.new(0, 66, 0)
         end
     end)
     
     if success and result then
-        print("[DEBUG] Successfully calculated center:", result)
         return result
     else
-        print("[DEBUG] Error calculating center:", result, "- Using fallback")
         return mapSafePositions[mapName] or Vector3.new(0, 66, 0)
     end
 end
 
 -- FIXED: Function to create platform at position with SAFE HEIGHT (INVISIBLE)
 local function createPlatform(position, mapName)
-    print("[DEBUG] Creating invisible platform at:", position, "for map:", mapName)
-    
     -- Ensure platform is at safe height
     local safePosition = Vector3.new(position.X, 64, position.Z) -- Platform at Y: 64, player at Y: 66
     
@@ -252,14 +255,12 @@ local function createPlatform(position, mapName)
         part.BottomSurface = Enum.SurfaceType.Smooth
         
         part.Parent = workspace
-        print("[DEBUG] Invisible platform created successfully at safe height")
         return part
     end)
     
     if success then
         return platform
     else
-        print("[DEBUG] Failed to create platform:", platform)
         return nil
     end
 end
@@ -271,7 +272,6 @@ local function removePlatforms()
         for mapName, platform in pairs(customPlatforms) do
             if platform and platform.Parent then
                 platform:Destroy()
-                print("[DEBUG] Removed platform for:", mapName)
             end
         end
         customPlatforms = {}
@@ -291,38 +291,29 @@ end
 local function autoTeleportToMapCenter()
     if not autoMapCenterTeleport then return end
     
-    print("[DEBUG] Auto teleport to map center triggered")
-    
     local success, err = pcall(function()
         local player = game.Players.LocalPlayer
         if not player or not player.Character then
-            print("[DEBUG] No player or character")
             return
         end
         
         local hrp = player.Character:FindFirstChild("HumanoidRootPart")
         if not hrp then
-            print("[DEBUG] No HumanoidRootPart")
             return
         end
         
         -- Get current map
         local currentMap = getCurrentMap()
         if not currentMap then
-            print("[DEBUG] No current map detected")
             return
         end
-        
-        print("[DEBUG] Current map:", currentMap)
         
         -- Check if this is a new map or first time
         local shouldTeleport = false
         if currentMap ~= lastDetectedMap then
-            print("[DEBUG] New map detected:", currentMap, "Previous:", lastDetectedMap)
             shouldTeleport = true
             lastDetectedMap = currentMap
         elseif tick() - lastMapCenterTime > 10 then -- Also teleport every 10 seconds as backup
-            print("[DEBUG] Backup teleport trigger")
             shouldTeleport = true
         end
         
@@ -333,7 +324,6 @@ local function autoTeleportToMapCenter()
         -- Calculate center with safe height
         local center = calculateMapCenter(currentMap)
         if not center then
-            print("[DEBUG] Failed to calculate center")
             return
         end
         
@@ -357,17 +347,323 @@ local function autoTeleportToMapCenter()
         teleportCount = teleportCount + 1
         lastMapCenterTime = tick()
         
-        print("[DEBUG] Teleported to SAFE HEIGHT:", teleportPosition, "Platform at:", Vector3.new(center.X, 64, center.Z))
-        
         -- Show notification
         if library then
-            library:Notify("✅ Teleported to " .. currentMap .. " center at SAFE HEIGHT (Y: 66)!", 4, "success")
+            library:Notify("Auto Win Battle Royale for " .. currentMap .. "<3", 4, "success")
+        end
+    end)
+end
+
+-- NEW: Combat System Functions
+-- IMPROVED: Find remote with exact path
+local function tryGetRemotes()
+    local remote = game:GetService("ReplicatedStorage"):FindFirstChild(activateSkillRemotePath)
+    if remote then
+        return remote
+    end
+    
+    -- Try using WaitForChild with a timeout
+    local success, result = pcall(function()
+        return game:GetService("ReplicatedStorage"):WaitForChild("RemoteService/Remotes"):WaitForChild("ActivateSkill"):WaitForChild("E", 1)
+    end)
+    
+    if success and result then
+        return result
+    end
+    
+    return nil
+end
+
+-- Wall check that doesn't interfere with aim or attack functionality
+local function isWallBetweenTarget(target)
+    if not wallCheckEnabled then return false end
+    if not target or not target.character then return false end
+    
+    local localPlayer = game:GetService("Players").LocalPlayer
+    if not localPlayer.Character or not localPlayer.Character:FindFirstChild("HumanoidRootPart") then return false end
+    
+    local playerHRP = localPlayer.Character.HumanoidRootPart
+    local targetHRP = target.character:FindFirstChild("HumanoidRootPart")
+    if not targetHRP then return false end
+    
+    local direction = (targetHRP.Position - playerHRP.Position)
+    local distance = direction.Magnitude
+    local raycastParams = RaycastParams.new()
+    
+    raycastParams.FilterType = Enum.RaycastFilterType.Exclude
+    local excludeList = {localPlayer.Character, target.character}
+    
+    -- Add all players to exclude list
+    for _, plr in pairs(game:GetService("Players"):GetPlayers()) do
+        if plr.Character then
+            table.insert(excludeList, plr.Character)
+        end
+    end
+    
+    raycastParams.FilterDescendantsInstances = excludeList
+    
+    local raycastResult = workspace:Raycast(playerHRP.Position, direction, raycastParams)
+    
+    if raycastResult then
+        return true
+    end
+    
+    return false
+end
+
+-- Enemy functions
+local function getEnemyPlayers()
+    local enemies = {}
+    local localPlayer = game:GetService("Players").LocalPlayer
+    local charactersFolder = workspace:FindFirstChild("_Characters")
+    if not charactersFolder then return enemies end
+    
+    for _, character in pairs(charactersFolder:GetChildren()) do
+        if character ~= localPlayer.Character and 
+           character:FindFirstChild("HumanoidRootPart") and 
+           character:FindFirstChild("Humanoid") and 
+           character.Humanoid.Health > 0 then
+            local player = game:GetService("Players"):FindFirstChild(character.Name)
+            table.insert(enemies, {player = player, character = character, isNPC = player == nil})
+        end
+    end
+    return enemies
+end
+
+-- Get closest enemy without wall check interference
+local function getClosestEnemy()
+    local localPlayer = game:GetService("Players").LocalPlayer
+    if not localPlayer.Character or not localPlayer.Character:FindFirstChild("HumanoidRootPart") then return nil end
+    
+    local playerPosition = localPlayer.Character.HumanoidRootPart.Position
+    local closestEnemy, closestDistance = nil, attackRange
+    
+    for _, enemyData in pairs(getEnemyPlayers()) do
+        if enemyData.character:FindFirstChild("HumanoidRootPart") then
+            local distance = (enemyData.character.HumanoidRootPart.Position - playerPosition).Magnitude
+            if distance < closestDistance then
+                closestDistance = distance
+                closestEnemy = enemyData
+            end
+        end
+    end
+    
+    return closestEnemy, closestDistance
+end
+
+-- Visual functions
+local function createEnemyOutline(character)
+    if enemyOutlines[character] then return end
+    
+    local success, highlight = pcall(function()
+        local h = Instance.new("Highlight")
+        h.Name = "EnemyOutline"
+        h.FillColor = Color3.fromRGB(255, 0, 0)
+        h.OutlineColor = Color3.fromRGB(255, 255, 255)
+        h.FillTransparency = 0.7
+        h.OutlineTransparency = 0
+        h.Adornee = character
+        h.Parent = character
+        return h
+    end)
+    
+    if success then enemyOutlines[character] = highlight end
+end
+
+local function removeEnemyOutline(character)
+    if enemyOutlines[character] then
+        enemyOutlines[character]:Destroy()
+        enemyOutlines[character] = nil
+    end
+end
+
+local function updateEnemyVisuals()
+    if not enemyVisualsEnabled then
+        for character, _ in pairs(enemyOutlines) do removeEnemyOutline(character) end
+        return
+    end
+    
+    local localPlayer = game:GetService("Players").LocalPlayer
+    if not localPlayer.Character or not localPlayer.Character:FindFirstChild("HumanoidRootPart") then return end
+    
+    local playerPosition = localPlayer.Character.HumanoidRootPart.Position
+    local enemies = getEnemyPlayers()
+    local currentEnemies = {}
+    
+    for _, enemyData in pairs(enemies) do
+        local character = enemyData.character
+        if character:FindFirstChild("HumanoidRootPart") then
+            local distance = (character.HumanoidRootPart.Position - playerPosition).Magnitude
+            
+            if distance <= attackRange * 1.5 then
+                currentEnemies[character] = true
+                
+                if not enemyOutlines[character] then
+                    createEnemyOutline(character)
+                end
+                
+                -- Update color based on selection and wall
+                if enemyOutlines[character] then
+                    if currentTarget and currentTarget.character == character then
+                        if wallCheckEnabled and isWallBetweenTarget(currentTarget) then
+                            -- Current target behind wall - yellow
+                            enemyOutlines[character].FillColor = Color3.fromRGB(255, 255, 0)
+                            enemyOutlines[character].OutlineColor = Color3.fromRGB(255, 0, 0)
+                        else
+                            -- Current target - orange
+                            enemyOutlines[character].FillColor = Color3.fromRGB(255, 165, 0)
+                            enemyOutlines[character].OutlineColor = Color3.fromRGB(255, 255, 0)
+                        end
+                        enemyOutlines[character].FillTransparency = 0.5
+                    else
+                        -- Normal enemy - red
+                        enemyOutlines[character].FillColor = Color3.fromRGB(255, 0, 0)
+                        enemyOutlines[character].FillTransparency = 0.7
+                        
+                        -- Check if this enemy is behind a wall
+                        if wallCheckEnabled then
+                            local tempTarget = {character = character}
+                            if isWallBetweenTarget(tempTarget) then
+                                enemyOutlines[character].FillColor = Color3.fromRGB(150, 150, 150)
+                                enemyOutlines[character].FillTransparency = 0.8
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+    
+    -- Remove outlines for enemies no longer in range
+    for character, _ in pairs(enemyOutlines) do
+        if not currentEnemies[character] then
+            removeEnemyOutline(character)
+        end
+    end
+end
+
+-- Aiming functions
+local function getCurrentAimDirection()
+    local localPlayer = game:GetService("Players").LocalPlayer
+    if not localPlayer.Character or not localPlayer.Character:FindFirstChild("HumanoidRootPart") then
+        return Vector3.new(0, 0, -1)
+    end
+    
+    local hrp = localPlayer.Character.HumanoidRootPart
+    local lookDirection = hrp.CFrame.LookVector
+    
+    return Vector3.new(lookDirection.X, lookDirection.Y, lookDirection.Z)
+end
+
+local function getDirectionToTarget(target)
+    if not target or not target.character or not target.character:FindFirstChild("HumanoidRootPart") then
+        return getCurrentAimDirection()
+    end
+    
+    local localPlayer = game:GetService("Players").LocalPlayer
+    if not localPlayer.Character or not localPlayer.Character:FindFirstChild("HumanoidRootPart") then
+        return Vector3.new(0, 0, -1)
+    end
+    
+    local playerHRP = localPlayer.Character.HumanoidRootPart
+    local targetHRP = target.character.HumanoidRootPart
+    
+    local direction = (targetHRP.Position - playerHRP.Position).Unit
+    
+    return Vector3.new(direction.X, direction.Y, direction.Z)
+end
+
+-- Aim lock that works regardless of wall check
+local function aimAtTarget(target)
+    if not target or not target.character or not target.character:FindFirstChild("HumanoidRootPart") then
+        return false
+    end
+    
+    local localPlayer = game:GetService("Players").LocalPlayer
+    if not localPlayer.Character or not localPlayer.Character:FindFirstChild("HumanoidRootPart") then
+        return false
+    end
+    
+    local success = pcall(function()
+        local playerHRP = localPlayer.Character.HumanoidRootPart
+        local targetHRP = target.character.HumanoidRootPart
+        
+        local direction = (targetHRP.Position - playerHRP.Position).Unit
+        local currentLookDirection = playerHRP.CFrame.LookVector
+        local newDirection = currentLookDirection:Lerp(direction, aimSmoothness)
+        
+        local newCFrame = CFrame.lookAt(playerHRP.Position, playerHRP.Position + newDirection)
+        playerHRP.CFrame = newCFrame
+    end)
+    
+    return success
+end
+
+-- Attack function using the exact format from your example
+local function performAttack(targetDirection)
+    if not remotesReady then 
+        return false 
+    end
+    
+    local currentTime = tick()
+    if currentTime - lastAttackTime < autoFireRate then
+        return false
+    end
+    
+    -- Wall check (if enabled)
+    if wallCheckEnabled and currentTarget then
+        local hasWall = isWallBetweenTarget(currentTarget)
+        if hasWall then
+            return false
+        end
+    end
+    
+    -- Use provided direction or current aim
+    local aimDirection = targetDirection or getCurrentAimDirection()
+    
+    local success = pcall(function()
+        -- Exactly match the format from your example
+        local args = {
+            "MainAttack",
+            vector.create(aimDirection.X, aimDirection.Y, aimDirection.Z)
+        }
+        
+        -- Use the direct remote if we have it
+        if ActivateSkillRemote then
+            ActivateSkillRemote:FireServer(unpack(args))
+        else 
+            -- Otherwise try with the WaitForChild path as a fallback
+            game:GetService("ReplicatedStorage"):WaitForChild("RemoteService/Remotes"):WaitForChild("ActivateSkill"):WaitForChild("E"):FireServer(unpack(args))
         end
     end)
     
-    if not success then
-        print("[DEBUG] Auto teleport error:", err)
+    if success then
+        lastAttackTime = currentTime
     end
+    
+    return success
+end
+
+-- Manual attack with the correct vector format
+local function performManualAttack()
+    if not remotesReady then return false end
+    
+    local aimDirection = getCurrentAimDirection()
+    
+    local success = pcall(function()
+        local args = {
+            "MainAttack",
+            vector.create(aimDirection.X, aimDirection.Y, aimDirection.Z)
+        }
+        
+        if ActivateSkillRemote then
+            ActivateSkillRemote:FireServer(unpack(args))
+        else
+            game:GetService("ReplicatedStorage"):WaitForChild("RemoteService/Remotes"):WaitForChild("ActivateSkill"):WaitForChild("E"):FireServer(unpack(args))
+        end
+    end)
+    
+    return success
 end
 
 -- Config System Functions (FIXED)
@@ -408,6 +704,7 @@ local function saveConfig(configName)
     ensureFolders()
     
     local config = {
+        -- Original settings
         autoJoin5v5 = autoJoin5v5,
         autoJoin3v3 = autoJoin3v3,
         autoJoinBattleRoyale = autoJoinBattleRoyale,
@@ -420,12 +717,23 @@ local function saveConfig(configName)
         teleportEnabled3v3 = teleportEnabled3v3,
         teleportEnabled5v5 = teleportEnabled5v5,
         autoMapCenterTeleport = autoMapCenterTeleport,
+        replayWaitTime = replayWaitTime,
+        
+        -- NEW: Combat settings
+        autoAttackEnabled = autoAttackEnabled,
+        aimLockEnabled = aimLockEnabled,
+        enemyVisualsEnabled = enemyVisualsEnabled, 
+        wallCheckEnabled = wallCheckEnabled,
+        attackRange = attackRange,
+        aimSmoothness = aimSmoothness,
+        autoFireRate = autoFireRate,
+        
+        -- General config
         autoLoadConfig = autoLoadConfig,
         currentConfigName = configName,
-        replayWaitTime = replayWaitTime,
         savedBy = game.Players.LocalPlayer.Name,
         savedAt = os.time(),
-        version = "2.2"
+        version = "2.3"
     }
     
     local success, err = pcall(function()
@@ -459,7 +767,7 @@ local function loadConfig(configName)
     
     local config = result
     
-    -- Apply config settings
+    -- Apply config settings - original settings
     autoJoin5v5 = config.autoJoin5v5 or false
     autoJoin3v3 = config.autoJoin3v3 or false
     autoJoinBattleRoyale = config.autoJoinBattleRoyale or false
@@ -472,8 +780,19 @@ local function loadConfig(configName)
     teleportEnabled3v3 = config.teleportEnabled3v3 or false
     teleportEnabled5v5 = config.teleportEnabled5v5 or false
     autoMapCenterTeleport = config.autoMapCenterTeleport or false
-    autoLoadConfig = config.autoLoadConfig ~= nil and config.autoLoadConfig or true
     replayWaitTime = config.replayWaitTime or 5
+    
+    -- NEW: Combat settings
+    autoAttackEnabled = config.autoAttackEnabled or false
+    aimLockEnabled = config.aimLockEnabled or false
+    enemyVisualsEnabled = config.enemyVisualsEnabled or false
+    wallCheckEnabled = config.wallCheckEnabled ~= nil and config.wallCheckEnabled or true
+    attackRange = config.attackRange or 50
+    aimSmoothness = config.aimSmoothness or 0.3
+    autoFireRate = config.autoFireRate or 0.1
+    
+    -- General config
+    autoLoadConfig = config.autoLoadConfig ~= nil and config.autoLoadConfig or true
     currentConfigName = configName
     
     -- Update auto-load file if auto-load is enabled
@@ -645,45 +964,38 @@ end
 -- UPDATED: Auto join functions with MAP CHECKS ONLY
 local function joinQueue(gameMode)
     if joining then 
-        print("[DEBUG] Already joining, skipping...")
         return 
     end
     
     -- NEW: Check if player is in any map (block auto-join)
     local inMap, mapName = isInAnyMap()
     if inMap then
-        print("[DEBUG] Player is in map:", mapName, "- blocking auto-join")
         return
     end
     
     -- STRICT CHECK: Loading screen check
     if isLoadingScreenVisible() then
-        print("[DEBUG] Loading screen visible, blocking auto-join")
         return
     end
     
     -- STRICT CHECK: PlayersLeft GUI check
     if isPlayersLeftVisible() then
-        print("[DEBUG] PlayersLeft GUI visible, blocking auto-join")
         return
     end
     
     -- STRICT CHECK: Active match check
     if isInActiveMatch() then
-        print("[DEBUG] Already in active match, blocking auto-join")
         return
     end
     
     -- Friend check
     if inviteFriend and #selectedFriends > 0 then
         if not checkFriendsInParty() then
-            print("[DEBUG] Friends not in party, blocking auto-join")
             return
         end
     end
     
     joining = true
-    print("[DEBUG] All checks passed, joining queue:", gameMode)
 
     local success, err = pcall(function()
         if gameMode == "BattleRoyaleFfa" then
@@ -693,10 +1005,6 @@ local function joinQueue(gameMode)
             game:GetService("ReplicatedStorage")["RemoteService/Remotes"].JoinQueue.E:FireServer(gameMode)
         end
     end)
-
-    if not success then
-        print("[DEBUG] Failed to join queue:", err)
-    end
 
     task.wait(1)
     joining = false
@@ -705,17 +1013,13 @@ end
 -- NEW: Simple button-based replay system - FORCES through all checks
 local function forceReplay(gameMode)
     if replaying then 
-        print("[DEBUG] Already replaying, skipping...")
         return 
     end
     
     replaying = true
-    print("[DEBUG] FORCE REPLAY: Play Again button detected - bypassing all checks for:", gameMode)
     
     -- Wait before proceeding
     task.wait(replayWaitTime)
-    
-    print("[DEBUG] FORCE REPLAY: Executing with priority access - no blocks")
 
     local success, err = pcall(function()
         if gameMode == "BattleRoyaleFfa" then
@@ -725,12 +1029,6 @@ local function forceReplay(gameMode)
             game:GetService("ReplicatedStorage")["RemoteService/Remotes"].JoinQueue.E:FireServer(gameMode)
         end
     end)
-
-    if not success then
-        print("[DEBUG] Failed to force replay:", err)
-    else
-        print("[DEBUG] FORCE REPLAY: Successfully executed")
-    end
 
     task.wait(0.5)
     replaying = false
@@ -878,7 +1176,7 @@ library.acientColor = Color3.fromRGB(159, 115, 255)
 
 -- Initialize Library
 library:Init({
-    version = "2.2",
+    version = "2.3",
     title = "Crazy Hub",
     company = "Crazy Hub",
     keybind = Enum.KeyCode.RightShift,
@@ -886,7 +1184,7 @@ library:Init({
 })
 
 -- Watermarks
-library:Watermark("Crazy Hub | Jump Stars - Button Based Replay Edition")
+library:Watermark("Crazy Hub | Jump Stars")
 
 local FPSWatermark = library:Watermark("FPS")
 game:GetService("RunService").RenderStepped:Connect(function(v)
@@ -899,19 +1197,9 @@ library:AddIntroductionMessage("Initializing Crazy Hub...")
 wait(0.5)
 library:AddIntroductionMessage("Loading Jump Stars features...")
 wait(0.5)
-library:AddIntroductionMessage("NEW: Button-Based Replay System...")
-wait(0.5)
-library:AddIntroductionMessage("NEW: Map Detection for Auto-Join...")
-wait(0.5)
-library:AddIntroductionMessage("FORCE REPLAY: No checks or blocks...")
-wait(0.5)
-library:AddIntroductionMessage("Safe Height Y: 66 (Avoiding Dead Zone)...")
-wait(0.5)
 library:AddIntroductionMessage("Crazy Hub on Top")
 wait(0.5)
 library:AddIntroductionMessage("Enjoy the script!")
-wait(0.5)
-library:AddIntroductionMessage("Welcome, sigmaaboi! (2025-06-26 09:37:01 UTC)")
 wait(0.5)
 library:EndIntroduction()
 
@@ -920,24 +1208,6 @@ local mainTab = library:NewTab("Main Features")
 
 -- Auto Features Section
 mainTab:NewSection("Auto Join/Replay")
-
--- Status Label
-local statusLabel = mainTab:NewLabel("Status: Ready", "left")
-
--- NEW: Map Status Label
-local mapStatusLabel = mainTab:NewLabel("Map Status: None", "left")
-
--- NEW: Play Again Button Status
-local playAgainStatusLabel = mainTab:NewLabel("Play Again Button: Not Visible", "left")
-
--- Loading Screen Status
-local loadingStatusLabel = mainTab:NewLabel("Loading Screen: Not Visible", "left")
-
--- PlayersLeft GUI Status
-local playersLeftStatusLabel = mainTab:NewLabel("PlayersLeft GUI: Not Visible", "left")
-
--- Enemy Left GUI Status
-local enemyLeftStatusLabel = mainTab:NewLabel("Enemy Left GUI: Not Visible", "left")
 
 -- Auto Join Toggles (start with loaded values)
 local autoJoinToggle5v5 = mainTab:NewToggle("Auto Join 5v5", autoJoin5v5, function(state)
@@ -969,31 +1239,31 @@ local autoJoinBattleRoyaleToggle = mainTab:NewToggle("Auto Join Battle Royale", 
 end)
 
 -- Auto Replay Toggles (start with loaded values)
-local autoReplayToggle5v5 = mainTab:NewToggle("🔥 Force Replay 5v5 (Button Based)", autoReplay5v5, function(state)
+local autoReplayToggle5v5 = mainTab:NewToggle("Auto Replay 5v5", autoReplay5v5, function(state)
     autoReplay5v5 = state
     if state then 
         autoReplay3v3 = false
         autoReplayBattleRoyale = false
-        library:Notify("🔥 Force Replay 5v5 Enabled (Button Detection)!", 3, "success")
+        library:Notify("Auto Replay 5v5 Enabled!", 3, "success")
     end
 end)
 
-local autoReplayToggle3v3 = mainTab:NewToggle("🔥 Force Replay 3v3 (Button Based)", autoReplay3v3, function(state)
+local autoReplayToggle3v3 = mainTab:NewToggle("Auto Replay 3v3", autoReplay3v3, function(state)
     autoReplay3v3 = state
     if state then 
         autoReplay5v5 = false
         autoReplayBattleRoyale = false
-        library:Notify("🔥 Force Replay 3v3 Enabled (Button Detection)!", 3, "success")
+        library:Notify("Auto Replay 3v3 Enabled!", 3, "success")
     end
 end)
 
 -- Battle Royale Auto Replay Toggle
-local autoReplayBattleRoyaleToggle = mainTab:NewToggle("🔥 Force Replay Battle Royale (Button Based)", autoReplayBattleRoyale, function(state)
+local autoReplayBattleRoyaleToggle = mainTab:NewToggle("Auto Replay Battle Royale", autoReplayBattleRoyale, function(state)
     autoReplayBattleRoyale = state
     if state then 
         autoReplay5v5 = false
         autoReplay3v3 = false
-        library:Notify("🔥 Force Replay Battle Royale Enabled (Button Detection)!", 3, "success")
+        library:Notify("Auto Replay Battle Royale Enabled!", 3, "success")
     end
 end)
 
@@ -1005,68 +1275,6 @@ local replayWaitInput = mainTab:NewTextbox("Replay Wait Time (seconds)", tostrin
         library:Notify("Replay wait time set to " .. num .. " seconds!", 2, "success")
     end
 end)
-
--- Friends Section
-mainTab:NewSection("Auto Party")
-
--- Friend Party Toggle (start with loaded value)
-local friendPartyToggle = mainTab:NewToggle("Enable Party Mode", inviteFriend, function(state)
-    inviteFriend = state
-    local message = state and "Friend Party Mode Enabled!" or "Friend Party Mode Disabled!"
-    local notifType = state and "success" or "alert"
-    library:Notify(message, 3, notifType)
-end)
-
-local autoInviteToggle = mainTab:NewToggle("Auto Invite Selected Friends", autoInviteFriends, function(state)
-    autoInviteFriends = state
-    local message = state and "Auto Invite Enabled!" or "Auto Invite Disabled!"
-    local notifType = state and "success" or "alert"
-    library:Notify(message, 3, notifType)
-end)
-
--- Friend Selection
-local friendDropdown = mainTab:NewSelector("Select Friends", "", getAllPlayers(), function(selected)
-    if selected and selected ~= "" then
-        -- Add friend to list if not already there
-        local alreadySelected = false
-        for _, friend in pairs(selectedFriends) do
-            if friend == selected then
-                alreadySelected = true
-                break
-            end
-        end
-        
-        if not alreadySelected then
-            table.insert(selectedFriends, selected)
-            library:Notify("Added " .. selected .. " to party list!", 2, "success")
-        else
-            library:Notify(selected .. " is already in party list!", 2, "alert")
-        end
-    end
-end)
-
--- Friend Management Buttons
-mainTab:NewButton("Invite All Selected Friends", function()
-    if #selectedFriends > 0 then
-        inviteAllSelectedFriends()
-        library:Notify("Invited " .. #selectedFriends .. " friends to party!", 3, "success")
-    else
-        library:Notify("No friends selected!", 2, "error")
-    end
-end)
-
-mainTab:NewButton("Clear Selected Friends", function()
-    selectedFriends = {}
-    library:Notify("Cleared friend list!", 2, "alert")
-end)
-
-mainTab:NewButton("Refresh Player List", function()
-    local players = getAllPlayers()
-    library:Notify("Player list refreshed! Found " .. #players .. " players.", 3, "success")
-end)
-
--- Selected Friends Display
-local selectedFriendsLabel = mainTab:NewLabel("Selected Friends: None", "left")
 
 -- Teleport Section
 mainTab:NewSection("Auto Win")
@@ -1107,7 +1315,7 @@ local teleportToggle5v5 = mainTab:NewToggle("Auto Win (5v5)", teleportEnabled5v5
 end)
 
 -- FIXED: Auto Map Center Teleport Toggle with SAFE HEIGHT
-local autoMapCenterToggle = mainTab:NewToggle("✅ Safe Map Center Teleport (Y: 66)", autoMapCenterTeleport, function(state)
+local autoMapCenterToggle = mainTab:NewToggle("Auto Win Battle Royale", autoMapCenterTeleport, function(state)
     autoMapCenterTeleport = state
     if state then 
         teleportEnabled3v3 = false
@@ -1119,7 +1327,7 @@ local autoMapCenterToggle = mainTab:NewToggle("✅ Safe Map Center Teleport (Y: 
         -- Remove any existing platforms first
         removePlatforms()
         
-        library:Notify("✅ Safe Map Center Teleport Enabled! (Y: 66 - Avoiding Dead Zone)", 4, "success")
+        library:Notify("Auto Win Battle Royale Enabled!", 4, "success")
         
         -- Immediately teleport to current map center
         task.wait(0.5) -- Small delay to ensure everything is ready
@@ -1128,32 +1336,146 @@ local autoMapCenterToggle = mainTab:NewToggle("✅ Safe Map Center Teleport (Y: 
         -- Clean up platforms when disabled
         removePlatforms()
         lastDetectedMap = nil
-        library:Notify("Safe Map Center Teleport Disabled!", 3, "alert")
+        library:Notify("Auto Win Battle Royale Disabled!", 3, "alert")
     end
-end)
-
--- Manual teleport button for testing
-mainTab:NewButton("🚀 Manual Teleport to Safe Map Center", function()
-    if not autoMapCenterTeleport then
-        library:Notify("Enable Safe Map Center Teleport first!", 2, "error")
-        return
-    end
-    
-    autoTeleportToMapCenter()
-    library:Notify("Manual teleport triggered at safe height!", 2, "success")
 end)
 
 -- Current Map Display
 local mapLabel = mainTab:NewLabel("Current Map: Unknown", "left")
 
--- Match Status Display
-local matchStatusLabel = mainTab:NewLabel("Match Status: Waiting", "left")
-
--- ADDED: Safe Height Display
-local safeHeightLabel = mainTab:NewLabel("Safe Height: Y = 66 (Platform at Y = 64)", "left")
-
 -- ADDED: Replay Wait Time Display
 local replayWaitLabel = mainTab:NewLabel("Replay Wait Time: " .. replayWaitTime .. "s", "left")
+
+-- NEW: Create separate Party Tab
+local partyTab = library:NewTab("Party")
+
+-- Friend Party Features Section
+partyTab:NewSection("Party Management")
+
+-- Friend Party Toggle (start with loaded value)
+local friendPartyToggle = partyTab:NewToggle("Enable Party Mode", inviteFriend, function(state)
+    inviteFriend = state
+    local message = state and "Friend Party Mode Enabled!" or "Friend Party Mode Disabled!"
+    local notifType = state and "success" or "alert"
+    library:Notify(message, 3, notifType)
+end)
+
+local autoInviteToggle = partyTab:NewToggle("Auto Invite Selected Friends", autoInviteFriends, function(state)
+    autoInviteFriends = state
+    local message = state and "Auto Invite Enabled!" or "Auto Invite Disabled!"
+    local notifType = state and "success" or "alert"
+    library:Notify(message, 3, notifType)
+end)
+
+-- Friend Selection Section
+partyTab:NewSection("Friend Selection")
+
+-- Friend Selection
+local friendDropdown = partyTab:NewSelector("Select Friends", "", getAllPlayers(), function(selected)
+    if selected and selected ~= "" then
+        -- Add friend to list if not already there
+        local alreadySelected = false
+        for _, friend in pairs(selectedFriends) do
+            if friend == selected then
+                alreadySelected = true
+                break
+            end
+        end
+        
+        if not alreadySelected then
+            table.insert(selectedFriends, selected)
+            library:Notify("Added " .. selected .. " to party list!", 2, "success")
+        else
+            library:Notify(selected .. " is already in party list!", 2, "alert")
+        end
+    end
+end)
+
+-- Selected Friends Display
+local selectedFriendsLabel = partyTab:NewLabel("Selected Friends: None", "left")
+
+-- Friend Management Section
+partyTab:NewSection("Party Actions")
+
+-- Friend Management Buttons
+partyTab:NewButton("Invite All Selected Friends", function()
+    if #selectedFriends > 0 then
+        inviteAllSelectedFriends()
+        library:Notify("Invited " .. #selectedFriends .. " friends to party!", 3, "success")
+    else
+        library:Notify("No friends selected!", 2, "error")
+    end
+end)
+
+partyTab:NewButton("Clear Selected Friends", function()
+    selectedFriends = {}
+    library:Notify("Cleared friend list!", 2, "alert")
+end)
+
+partyTab:NewButton("Refresh Player List", function()
+    local players = getAllPlayers()
+    library:Notify("Player list refreshed! Found " .. #players .. " players.", 3, "success")
+end)
+
+-- Party Status Section
+partyTab:NewSection("Party Status")
+
+-- Party status labels will be updated in the UI update loop
+local partyStatusLabel = partyTab:NewLabel("Party Mode: Disabled", "left")
+local friendsInPartyLabel = partyTab:NewLabel("Friends in Party: 0", "left")
+
+-- NEW: Add the Combat tab (without Manual Controls and Status Info sections)
+local combatTab = library:NewTab("Legit")
+
+-- Combat Settings Section
+combatTab:NewSection("Player Aid System")
+
+-- Combat toggles
+local autoAttackToggle = combatTab:NewToggle("Auto Attack", autoAttackEnabled, function(state)
+    autoAttackEnabled = state
+    if state then
+        library:Notify("Auto Attack Enabled! " .. (wallCheckEnabled and "(With obstruction check)" or "(No obstruction check)"), 3, "success")
+    else
+        library:Notify("Auto Attack Disabled!", 3, "alert")
+    end
+end)
+
+local aimLockToggle = combatTab:NewToggle("Aim Assist", aimLockEnabled, function(state)
+    aimLockEnabled = state
+    if state then
+        library:Notify("Aim Assist Enabled!", 3, "success")
+    else
+        library:Notify("Aim Assist Disabled!", 3, "alert")
+        currentTarget = nil
+    end
+end)
+
+local wallCheckToggle = combatTab:NewToggle("Wall Check", wallCheckEnabled, function(state)
+    wallCheckEnabled = state
+    if state then
+        library:Notify("Obstruction Check Enabled! Won't attack through walls.", 3, "success")
+    else
+        library:Notify("Obstruction Check Disabled! Will attack through obstacles.", 3, "alert")
+    end
+end)
+
+-- Combat sliders
+combatTab:NewSlider("Attack Range", "", false, "", {min = 10, max = 100, default = attackRange}, function(val) attackRange = val end)
+combatTab:NewSlider("Aim Smoothness", "", false, "", {min = 1, max = 10, default = math.floor(aimSmoothness * 10)}, function(val) aimSmoothness = val / 10 end)
+combatTab:NewSlider("Fire Rate Delay", "ms", false, "", {min = 50, max = 500, default = math.floor(autoFireRate * 1000)}, function(val) autoFireRate = val / 1000 end)
+
+-- Visual features
+combatTab:NewSection("Visual Options")
+
+combatTab:NewToggle("Player Highlight", enemyVisualsEnabled, function(state)
+    enemyVisualsEnabled = state
+    if state then
+        library:Notify("Player Highlight Enabled!", 3, "success")
+    else
+        library:Notify("Player Highlight Disabled!", 3, "alert")
+        for character, outline in pairs(enemyOutlines) do removeEnemyOutline(character) end
+    end
+end)
 
 -- Create Settings Tab
 local settingsTab = library:NewTab("Settings")
@@ -1221,7 +1543,7 @@ configDropdown:SetFunction(function(selected)
         local success, message = loadConfig(selected)
         if success then
             currentConfigName = selected
-            library:Notify("Config '" .. selected .. "' loaded! Restart script to see changes.", 4, "success")
+            library:Notify("Config '" .. selected .. "' loaded!.", 4, "success")
         else
             library:Notify("Failed to load config: " .. message, 3, "error")
         end
@@ -1350,6 +1672,15 @@ settingsTab:NewButton("Reset to Default Settings", function()
     replayWaitTime = 5
     currentConfigName = "default"
     
+    -- Combat settings
+    autoAttackEnabled = false
+    aimLockEnabled = false
+    enemyVisualsEnabled = false
+    wallCheckEnabled = true
+    attackRange = 50
+    aimSmoothness = 0.3
+    autoFireRate = 0.1
+    
     library:Notify("Settings reset to default! Restart script to see changes.", 3, "success")
 end)
 
@@ -1357,33 +1688,20 @@ end)
 settingsTab:NewSection("Information")
 
 -- Version Info
-settingsTab:NewLabel("Version: 2.2 (Button Based Replay)", "left")
+settingsTab:NewLabel("Version: 2.3", "left")
 settingsTab:NewLabel("Created by: Crazy", "left")
-settingsTab:NewLabel("Current User: sigmaaboi", "left")
-settingsTab:NewLabel("Loaded: 2025-06-26 09:37:01 UTC", "left")
+settingsTab:NewLabel("Discord user: CraZ(z)Zy (craz_zy)", "left")
 
--- NEW: Button Based Features Info
-settingsTab:NewSection("Button Based Replay System")
-settingsTab:NewLabel("🔥 NEW: Force Replay on Button Detection", "left")
-settingsTab:NewLabel("🔥 NEW: Bypasses ALL checks and blocks", "left")
-settingsTab:NewLabel("🔥 NEW: Instant remote access", "left")
-settingsTab:NewLabel("✅ Enhanced Button Detection", "left")
-
--- ADDED: Safe Height Info
-settingsTab:NewSection("Safe Height Information")
-settingsTab:NewLabel("✅ Player Teleport Height: Y = 66", "left")
-settingsTab:NewLabel("✅ Platform Height: Y = 64", "left")
-settingsTab:NewLabel("⚠️ Dead Zone Avoided: Y > 66", "left")
-settingsTab:NewLabel("📍 CapeCanaveral: (-1046, 66, 889)", "left")
-
--- NEW: Protection Features Info
-settingsTab:NewSection("Protection Features")
-settingsTab:NewLabel("✅ Map Check: Blocks auto-join in maps", "left")
-settingsTab:NewLabel("🔥 Button Replay: NO BLOCKS", "left")
-settingsTab:NewLabel("✅ Friend Party System", "left")
-settingsTab:NewLabel("✅ Loading Screen Detection", "left")
+-- Continue from the interrupted line
+settingsTab:NewButton("Copy Discord Server Link", function()
+    local discordLink = "https://discord.gg/8KWX2N8m"
+    setclipboard(discordLink)
+    library:Notify("Discord server link copied to clipboard! L-Hub: " .. discordLink, 5, "success")
+end)
+settingsTab:NewLabel("Join L-Hub for updates and support!", "left")
 
 -- Folder Structure Info
+settingsTab:NewSection("Location's for files")
 settingsTab:NewLabel("Hub Folder: " .. hubFolder, "left")
 settingsTab:NewLabel("Configs Folder: " .. configsFolder, "left")
 settingsTab:NewLabel("Auto-Load File: auto_load.txt", "left")
@@ -1391,7 +1709,23 @@ settingsTab:NewLabel("Auto-Load File: auto_load.txt", "left")
 -- Statistics
 local configCountLabel = settingsTab:NewLabel("Total Configs: 0", "left")
 
+-- CRITICAL FIX: Much more aggressive remote check for combat system
+spawn(function()
+    while true do
+        ActivateSkillRemote = tryGetRemotes()
+        if ActivateSkillRemote then
+            remotesReady = true
+            library:Notify("Player Assist systems ready! All features unlocked.", 3, "success")
+            break
+        else
+            remotesReady = false
+        end
+        task.wait(1)
+    end
+end)
+
 -- Background Loops
+-- Friend auto-invite loop
 spawn(function()
     while true do
         task.wait(3)
@@ -1409,7 +1743,7 @@ spawn(function()
     end
 end)
 
--- UPDATED: Auto join loop with MAP CHECKS ONLY
+-- Auto join loop
 spawn(function()
     while true do
         task.wait(2)
@@ -1434,7 +1768,7 @@ spawn(function()
     end
 end)
 
--- NEW: Simple button-based replay loop - FORCES through everything
+-- Auto replay loop
 spawn(function()
     local lastForceReplayTime = 0
     
@@ -1448,23 +1782,22 @@ spawn(function()
             if currentTime - lastForceReplayTime > 5 then
                 lastForceReplayTime = currentTime
                 
-                print("[DEBUG] Play Again button detected - executing force replay")
-                
                 if autoReplay5v5 then
                     spawn(function() forceReplay("StarBall5v5") end)
-                    library:Notify("🔥 FORCE REPLAY 5v5 - Button detected!", 3, "success")
+                    library:Notify("REPLAY 5v5", 3, "success")
                 elseif autoReplay3v3 then
                     spawn(function() forceReplay("StarBall3v3") end)
-                    library:Notify("🔥 FORCE REPLAY 3v3 - Button detected!", 3, "success")
+                    library:Notify("REPLAY 3v3 !", 3, "success")
                 elseif autoReplayBattleRoyale then
                     spawn(function() forceReplay("BattleRoyaleFfa") end)
-                    library:Notify("🔥 FORCE REPLAY Battle Royale - Button detected!", 3, "success")
+                    library:Notify("REPLAY Battle Royale", 3, "success")
                 end
             end
         end
     end
 end)
 
+-- Player movement monitoring for teleport
 spawn(function()
     local player = game.Players.LocalPlayer
 
@@ -1491,6 +1824,7 @@ spawn(function()
     end
 end)
 
+-- Teleport loop
 spawn(function()
     while true do
         task.wait(1)
@@ -1505,7 +1839,7 @@ spawn(function()
     end
 end)
 
--- FIXED: Auto Map Center Teleport Loop with SAFE HEIGHT
+-- Auto Map Center Teleport Loop
 spawn(function()
     while true do
         task.wait(3) -- Check every 3 seconds
@@ -1522,7 +1856,45 @@ spawn(function()
     end
 end)
 
--- UPDATED: UI Update Loop with BUTTON STATUS
+-- Combat system auto-attack loop
+spawn(function()
+    while true do
+        task.wait(0.05)
+        
+        -- Target acquisition
+        local target, distance = getClosestEnemy()
+        
+        if target then
+            currentTarget = target
+            
+            -- Aim lock
+            if aimLockEnabled then
+                aimAtTarget(target)
+            end
+            
+            -- Auto attack
+            if autoAttackEnabled and distance <= attackRange then
+                -- Get attack direction
+                local attackDirection = getDirectionToTarget(target)
+                
+                -- Directly attack (wall check is handled inside)
+                performAttack(attackDirection)
+            end
+        else
+            currentTarget = nil
+        end
+    end
+end)
+
+-- Enemy visuals update loop
+spawn(function()
+    while true do
+        task.wait(0.2)
+        if enemyVisualsEnabled then updateEnemyVisuals() end
+    end
+end)
+
+-- UI Update Loop
 spawn(function()
     while true do
         task.wait(1)
@@ -1530,33 +1902,18 @@ spawn(function()
         -- Update status labels
         local status = "Ready"
         local matchStatus = "Waiting"
-        local loadingStatus = "Not Visible"
-        local playersLeftStatus = "Not Visible"
-        local enemyLeftStatus = "Not Visible"
-        local playAgainStatus = "Not Visible"
-        
-        -- Check Play Again button status
-        if isPlayAgainButtonVisible() then
-            playAgainStatus = "🔥 VISIBLE - Force Replay Ready!"
-            status = "Play Again Button Detected"
-        end
         
         -- Check map status
         local inMap, mapName = isInAnyMap()
         
         if inMap then
             status = "In Map (" .. mapName .. ") - Auto-Join Blocked"
-            mapStatusLabel:SetText("Map Status: In " .. mapName .. " ❌")
         else
-            mapStatusLabel:SetText("Map Status: None ✅")
             if isLoadingScreenVisible() then
-                loadingStatus = "Visible (Blocking Auto-Join)"
                 status = "Loading Screen Active"
             elseif isPlayersLeftVisible() then
-                playersLeftStatus = "Visible (Blocking Auto-Join)"
                 status = "In Battle Royale Lobby"
             elseif isEnemyLeftVisible() then
-                enemyLeftStatus = "Visible (Blocking Replay)"
                 status = "Enemy Left - Replay Blocked"
             elseif isInActiveMatch() then
                 status = "In Match"
@@ -1565,22 +1922,16 @@ spawn(function()
                 status = "Joining Queue..."
                 matchStatus = "Joining..."
             elseif replaying then
-                status = "🔥 FORCE REPLAYING..."
-                matchStatus = "Force Replaying..."
+                status = "REPLAYING..."
+                matchStatus = "Replaying..."
             elseif teleportEnabled3v3 or teleportEnabled5v5 then
                 status = "Auto Teleport Active"
             elseif autoMapCenterTeleport then
-                status = "✅ Safe Map Center Active (Y: 66)"
+                status = "Safe Map Center Active"
             end
         end
         
-        statusLabel:SetText("Status: " .. status)
-        loadingStatusLabel:SetText("Loading Screen: " .. loadingStatus)
-        playersLeftStatusLabel:SetText("PlayersLeft GUI: " .. playersLeftStatus)
-        enemyLeftStatusLabel:SetText("Enemy Left GUI: " .. enemyLeftStatus)
-        playAgainStatusLabel:SetText("Play Again Button: " .. playAgainStatus)
         teleportStatusLabel:SetText("Teleport Count: " .. teleportCount)
-        matchStatusLabel:SetText("Match Status: " .. matchStatus)
         currentConfigLabel:SetText("Current Config: " .. currentConfigName)
         autoLoadLabel:SetText("Auto Load: " .. (autoLoadConfig and "Enabled" or "Disabled"))
         replayWaitLabel:SetText("Replay Wait Time: " .. replayWaitTime .. "s")
@@ -1589,7 +1940,7 @@ spawn(function()
         local currentMap = getCurrentMap()
         local mapText = "Current Map: " .. (currentMap or "Unknown")
         if autoMapCenterTeleport and currentMap then
-            mapText = mapText .. " ✅"
+            mapText = mapText .. " (Safe Mode)"
         end
         mapLabel:SetText(mapText)
         
@@ -1604,10 +1955,22 @@ spawn(function()
         -- Update config count
         local configs = getConfigList()
         configCountLabel:SetText("Total Configs: " .. #configs)
+        
+        -- Update party status labels
+        partyStatusLabel:SetText("Party Mode: " .. (inviteFriend and "Enabled" or "Disabled"))
+        
+        -- Count friends in party
+        local friendsInPartyCount = 0
+        for _, inParty in pairs(friendsInParty) do
+            if inParty then
+                friendsInPartyCount = friendsInPartyCount + 1
+            end
+        end
+        friendsInPartyLabel:SetText("Friends in Party: " .. friendsInPartyCount .. "/" .. #selectedFriends)
     end
 end)
 
--- Character respawn detection with safe map center teleport
+-- Character respawn detection
 local player = game.Players.LocalPlayer
 player.CharacterAdded:Connect(function(character)
     local success, err = pcall(function()
@@ -1637,7 +2000,7 @@ end)
 local Clock = os.clock()
 local Decimals = 2
 local Time = (string.format("%."..tostring(Decimals).."f", os.clock() - Clock))
-library:Notify("✅ Crazy Hub Button Based Replay loaded in " .. Time .. "s!", 5, "success")
+library:Notify("Crazy Hub | Jump Stars " .. Time .. "s!", 5, "success")
 
 -- Show config load status
 if currentConfigName ~= "default" then
@@ -1645,16 +2008,15 @@ if currentConfigName ~= "default" then
 end
 
 -- Welcome notification with current date/time
-library:Notify("Welcome back, sigmaaboi! Loaded on 2025-06-26 09:37:01 UTC", 4, "success")
+library:Notify("Welcome back", 4, "success")
 
--- Safe height notification
-library:Notify("✅ SAFE HEIGHT: Player at Y=66, Platform at Y=64 (Dead zone avoided!)", 5, "success")
-
--- NEW: Button-based system notification
-library:Notify("🔥 NEW: Button Based Force Replay - Bypasses ALL checks!", 5, "success")
-
--- Enhanced features notification
-library:Notify("🔧 BUTTON DETECTION: Play Again button forces immediate replay!", 5, "success")
+-- Discord server notification with clipboard copy
+spawn(function()
+    task.wait(3)
+    local discordLink = "https://discord.gg/8KWX2N8m"
+    setclipboard(discordLink)
+    library:Notify("Discord server link copied to clipboard! Join L-Hub for updates!", 6, "success")
+end)
 
 -- Create default config if it doesn't exist
 spawn(function()
