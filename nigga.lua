@@ -11,17 +11,12 @@ local autoInviteFriends = false
 local waitingForFriend = false
 local friendsInParty = {}
 
--- Auto replay variables
+-- Auto replay variables (simplified)
 local autoReplay5v5 = false
 local autoReplay3v3 = false
 local autoReplayBattleRoyale = false
 local replaying = false
-local replayWaitTime = 5 -- Wait time before checking replay conditions
-
--- NEW: Replay priority system
-local replayInProgress = false
-local replayResultDetected = false
-local lastResultTime = 0
+local replayWaitTime = 5
 
 -- Teleport toggles for each mode
 local teleportEnabled3v3 = false
@@ -158,70 +153,13 @@ local function getCurrentMap()
     return nil
 end
 
--- NEW: Enhanced replay result checks
-local function checkForWin()
+-- NEW: Check if "Play Again" button is visible
+local function isPlayAgainButtonVisible()
     local success, result = pcall(function()
-        local gui = game:GetService("Players").LocalPlayer.PlayerGui.App.Main.Gamemode.Results.Holder.MatchEndedPlacement.Place1.Top
-        return gui and gui.Visible and gui.Text == "You won!"
+        local button = game:GetService("Players").LocalPlayer.PlayerGui.App.Main.Gamemode.Results.ButtonHolder.PlayAgain.Button
+        return button and button.Visible and button.Parent.Visible
     end)
     return success and result
-end
-
-local function checkForLoss()
-    local success, result = pcall(function()
-        local gui = game:GetService("Players").LocalPlayer.PlayerGui.App.Main.Gamemode.Results.Holder.MatchEndedPlacement.Place1.Top
-        return gui and gui.Visible and gui.Text == "You lost!"
-    end)
-    return success and result
-end
-
-local function checkBattleRoyalePlacement()
-    local success, placement = pcall(function()
-        local gui = game:GetService("Players").LocalPlayer.PlayerGui.App.Main.Gamemode.Results.Holder.MatchEndedPlacement.Place1.Top
-        if gui and gui.Visible then
-            for i = 1, 10 do
-                if gui.Text == "You are #" .. i .. "!" then
-                    return i
-                end
-            end
-        end
-        return nil
-    end)
-    return success and placement or false, nil
-end
-
--- NEW: Check if we have a valid replay result and set priority
-local function hasValidReplayResult()
-    local won = checkForWin()
-    local lost = checkForLoss()
-    local _, placement = checkBattleRoyalePlacement()
-    
-    local hasResult = won or lost or placement ~= nil
-    
-    if hasResult and not replayResultDetected then
-        -- First time detecting result - set priority for replay
-        replayResultDetected = true
-        replayInProgress = true
-        lastResultTime = tick()
-        print("[DEBUG] Replay result detected - blocking auto-join for 30 seconds")
-    end
-    
-    return hasResult
-end
-
--- NEW: Check if replay has priority over auto-join
-local function isReplayBlocking()
-    if replayInProgress then
-        -- Keep blocking auto-join for 30 seconds after result detected
-        if tick() - lastResultTime > 30 then
-            replayInProgress = false
-            replayResultDetected = false
-            print("[DEBUG] Replay priority expired - auto-join unblocked")
-            return false
-        end
-        return true
-    end
-    return false
 end
 
 -- FIXED: Function to calculate map center dynamically with SAFE HEIGHT (Y: 66)
@@ -312,9 +250,6 @@ local function createPlatform(position, mapName)
         part.Shape = Enum.PartType.Block
         part.TopSurface = Enum.SurfaceType.Smooth
         part.BottomSurface = Enum.SurfaceType.Smooth
-        
-        -- Remove safety glow effect and text labels (commented out)
-        -- No lights or text for stealth
         
         part.Parent = workspace
         print("[DEBUG] Invisible platform created successfully at safe height")
@@ -707,17 +642,11 @@ local function checkFriendsInParty()
     return allFriendsInParty
 end
 
--- UPDATED: Auto join functions with MAP CHECKS + REPLAY PRIORITY
+-- UPDATED: Auto join functions with MAP CHECKS ONLY
 local function joinQueue(gameMode)
     if joining then 
         print("[DEBUG] Already joining, skipping...")
         return 
-    end
-    
-    -- NEW: Check if replay has priority (result detected)
-    if isReplayBlocking() then
-        print("[DEBUG] Replay has priority over auto-join - blocking")
-        return
     end
     
     -- NEW: Check if player is in any map (block auto-join)
@@ -773,56 +702,20 @@ local function joinQueue(gameMode)
     joining = false
 end
 
--- UPDATED: Auto replay function with ENHANCED RESULT CHECKS + PRIORITY ACCESS
-local function replayQueue(gameMode)
+-- NEW: Simple button-based replay system - FORCES through all checks
+local function forceReplay(gameMode)
     if replaying then 
         print("[DEBUG] Already replaying, skipping...")
         return 
     end
     
-    -- NEW: Enhanced check - only replay if we see valid results
-    if not hasValidReplayResult() then
-        print("[DEBUG] No valid replay result visible - blocking replay")
-        return
-    end
-    
-    -- Friend check
-    if inviteFriend and #selectedFriends > 0 then
-        if not checkFriendsInParty() then
-            print("[DEBUG] Friends not in party, blocking replay")
-            return
-        end
-    end
-    
     replaying = true
-    print("[DEBUG] Valid result detected, starting replay process for:", gameMode)
+    print("[DEBUG] FORCE REPLAY: Play Again button detected - bypassing all checks for:", gameMode)
     
-    -- WAIT before checking conditions
-    print("[DEBUG] Waiting", replayWaitTime, "seconds before replay checks...")
+    -- Wait before proceeding
     task.wait(replayWaitTime)
     
-    -- Check if enemy left GUI is visible
-    if isEnemyLeftVisible() then
-        print("[DEBUG] Enemy left GUI visible, blocking replay")
-        replaying = false
-        return
-    end
-    
-    -- Check loading screen again
-    if isLoadingScreenVisible() then
-        print("[DEBUG] Loading screen visible during replay, blocking")
-        replaying = false
-        return
-    end
-    
-    -- Check if already in active match
-    if isInActiveMatch() then
-        print("[DEBUG] Already in active match during replay, blocking")
-        replaying = false
-        return
-    end
-    
-    print("[DEBUG] All replay checks passed, proceeding with replay (priority access)")
+    print("[DEBUG] FORCE REPLAY: Executing with priority access - no blocks")
 
     local success, err = pcall(function()
         if gameMode == "BattleRoyaleFfa" then
@@ -834,39 +727,13 @@ local function replayQueue(gameMode)
     end)
 
     if not success then
-        print("[DEBUG] Failed to replay queue:", err)
+        print("[DEBUG] Failed to force replay:", err)
+    else
+        print("[DEBUG] FORCE REPLAY: Successfully executed")
     end
 
     task.wait(0.5)
     replaying = false
-    
-    -- Reset replay priority after successful replay
-    replayInProgress = false
-    replayResultDetected = false
-    print("[DEBUG] Replay completed - auto-join unblocked")
-end
-
--- Function to check if match ended (win or loss)
-local function checkForMatchEnd()
-    local success, result = pcall(function()
-        local resultsGui = game:GetService("Players").LocalPlayer.PlayerGui.App.Main.Gamemode.Results
-        if resultsGui and resultsGui.Visible then
-            return true
-        end
-        
-        local playerGui = game:GetService("Players").LocalPlayer.PlayerGui
-        for _, gui in pairs(playerGui:GetChildren()) do
-            if gui.Name:lower():find("result") or gui.Name:lower():find("end") then
-                if gui.Visible then
-                    return true
-                end
-            end
-        end
-        
-        return false
-    end)
-    
-    return success and result
 end
 
 -- Function to find enemy goal
@@ -1019,7 +886,7 @@ library:Init({
 })
 
 -- Watermarks
-library:Watermark("Crazy Hub | Jump Stars - Replay Priority Edition")
+library:Watermark("Crazy Hub | Jump Stars - Button Based Replay Edition")
 
 local FPSWatermark = library:Watermark("FPS")
 game:GetService("RunService").RenderStepped:Connect(function(v)
@@ -1032,13 +899,11 @@ library:AddIntroductionMessage("Initializing Crazy Hub...")
 wait(0.5)
 library:AddIntroductionMessage("Loading Jump Stars features...")
 wait(0.5)
-library:AddIntroductionMessage("NEW: Replay Priority System...")
+library:AddIntroductionMessage("NEW: Button-Based Replay System...")
 wait(0.5)
 library:AddIntroductionMessage("NEW: Map Detection for Auto-Join...")
 wait(0.5)
-library:AddIntroductionMessage("NEW: Enhanced Replay Result Validation...")
-wait(0.5)
-library:AddIntroductionMessage("FIXED: Remote Conflict Resolution...")
+library:AddIntroductionMessage("FORCE REPLAY: No checks or blocks...")
 wait(0.5)
 library:AddIntroductionMessage("Safe Height Y: 66 (Avoiding Dead Zone)...")
 wait(0.5)
@@ -1046,7 +911,7 @@ library:AddIntroductionMessage("Crazy Hub on Top")
 wait(0.5)
 library:AddIntroductionMessage("Enjoy the script!")
 wait(0.5)
-library:AddIntroductionMessage("Welcome, sigmaaboi! (2025-06-26 09:18:23 UTC)")
+library:AddIntroductionMessage("Welcome, sigmaaboi! (2025-06-26 09:37:01 UTC)")
 wait(0.5)
 library:EndIntroduction()
 
@@ -1062,8 +927,8 @@ local statusLabel = mainTab:NewLabel("Status: Ready", "left")
 -- NEW: Map Status Label
 local mapStatusLabel = mainTab:NewLabel("Map Status: None", "left")
 
--- NEW: Replay Priority Status
-local replayPriorityLabel = mainTab:NewLabel("Replay Priority: None", "left")
+-- NEW: Play Again Button Status
+local playAgainStatusLabel = mainTab:NewLabel("Play Again Button: Not Visible", "left")
 
 -- Loading Screen Status
 local loadingStatusLabel = mainTab:NewLabel("Loading Screen: Not Visible", "left")
@@ -1104,31 +969,31 @@ local autoJoinBattleRoyaleToggle = mainTab:NewToggle("Auto Join Battle Royale", 
 end)
 
 -- Auto Replay Toggles (start with loaded values)
-local autoReplayToggle5v5 = mainTab:NewToggle("Auto Replay 5v5 (Win/Loss)", autoReplay5v5, function(state)
+local autoReplayToggle5v5 = mainTab:NewToggle("🔥 Force Replay 5v5 (Button Based)", autoReplay5v5, function(state)
     autoReplay5v5 = state
     if state then 
         autoReplay3v3 = false
         autoReplayBattleRoyale = false
-        library:Notify("Auto Replay 5v5 Enabled (Priority System)!", 3, "success")
+        library:Notify("🔥 Force Replay 5v5 Enabled (Button Detection)!", 3, "success")
     end
 end)
 
-local autoReplayToggle3v3 = mainTab:NewToggle("Auto Replay 3v3 (Win/Loss)", autoReplay3v3, function(state)
+local autoReplayToggle3v3 = mainTab:NewToggle("🔥 Force Replay 3v3 (Button Based)", autoReplay3v3, function(state)
     autoReplay3v3 = state
     if state then 
         autoReplay5v5 = false
         autoReplayBattleRoyale = false
-        library:Notify("Auto Replay 3v3 Enabled (Priority System)!", 3, "success")
+        library:Notify("🔥 Force Replay 3v3 Enabled (Button Detection)!", 3, "success")
     end
 end)
 
 -- Battle Royale Auto Replay Toggle
-local autoReplayBattleRoyaleToggle = mainTab:NewToggle("Auto Replay Battle Royale (Top 10)", autoReplayBattleRoyale, function(state)
+local autoReplayBattleRoyaleToggle = mainTab:NewToggle("🔥 Force Replay Battle Royale (Button Based)", autoReplayBattleRoyale, function(state)
     autoReplayBattleRoyale = state
     if state then 
         autoReplay5v5 = false
         autoReplay3v3 = false
-        library:Notify("Auto Replay Battle Royale Enabled (Priority System)!", 3, "success")
+        library:Notify("🔥 Force Replay Battle Royale Enabled (Button Detection)!", 3, "success")
     end
 end)
 
@@ -1492,17 +1357,17 @@ end)
 settingsTab:NewSection("Information")
 
 -- Version Info
-settingsTab:NewLabel("Version: 2.2 (Replay Priority System)", "left")
+settingsTab:NewLabel("Version: 2.2 (Button Based Replay)", "left")
 settingsTab:NewLabel("Created by: Crazy", "left")
 settingsTab:NewLabel("Current User: sigmaaboi", "left")
-settingsTab:NewLabel("Loaded: 2025-06-26 09:18:23 UTC", "left")
+settingsTab:NewLabel("Loaded: 2025-06-26 09:37:01 UTC", "left")
 
--- NEW: Replay Priority Features Info
-settingsTab:NewSection("Replay Priority System")
-settingsTab:NewLabel("✅ NEW: Replay Priority over Auto-Join", "left")
-settingsTab:NewLabel("✅ NEW: 30s Auto-Join Block on Results", "left")
-settingsTab:NewLabel("✅ NEW: Remote Conflict Resolution", "left")
-settingsTab:NewLabel("✅ Enhanced Result Detection", "left")
+-- NEW: Button Based Features Info
+settingsTab:NewSection("Button Based Replay System")
+settingsTab:NewLabel("🔥 NEW: Force Replay on Button Detection", "left")
+settingsTab:NewLabel("🔥 NEW: Bypasses ALL checks and blocks", "left")
+settingsTab:NewLabel("🔥 NEW: Instant remote access", "left")
+settingsTab:NewLabel("✅ Enhanced Button Detection", "left")
 
 -- ADDED: Safe Height Info
 settingsTab:NewSection("Safe Height Information")
@@ -1514,9 +1379,9 @@ settingsTab:NewLabel("📍 CapeCanaveral: (-1046, 66, 889)", "left")
 -- NEW: Protection Features Info
 settingsTab:NewSection("Protection Features")
 settingsTab:NewLabel("✅ Map Check: Blocks auto-join in maps", "left")
-settingsTab:NewLabel("✅ Enhanced Replay: Waits for results", "left")
-settingsTab:NewLabel("✅ Result Detection: Won/Lost/#", "left")
+settingsTab:NewLabel("🔥 Button Replay: NO BLOCKS", "left")
 settingsTab:NewLabel("✅ Friend Party System", "left")
+settingsTab:NewLabel("✅ Loading Screen Detection", "left")
 
 -- Folder Structure Info
 settingsTab:NewLabel("Hub Folder: " .. hubFolder, "left")
@@ -1544,77 +1409,56 @@ spawn(function()
     end
 end)
 
--- UPDATED: Auto join loop with MAP CHECKS + REPLAY PRIORITY
+-- UPDATED: Auto join loop with MAP CHECKS ONLY
 spawn(function()
     while true do
-        task.wait(2) -- Reduced wait time for better responsiveness
+        task.wait(2)
         
         local success, err = pcall(function()
-            -- STRICT CHECK: Loading screen first (most important)
             if not isLoadingScreenVisible() then
-                -- STRICT CHECK: PlayersLeft GUI (Battle Royale lobby)
                 if not isPlayersLeftVisible() then
-                    -- STRICT CHECK: Already in active match
                     if not isInActiveMatch() then
-                        -- STRICT CHECK: Not already joining
                         if not joining then
                             if autoJoin5v5 then
-                                print("[DEBUG] Auto-join 5v5 triggered")
                                 joinQueue("StarBall5v5")
                             elseif autoJoin3v3 then
-                                print("[DEBUG] Auto-join 3v3 triggered")
                                 joinQueue("StarBall3v3")
                             elseif autoJoinBattleRoyale then
-                                print("[DEBUG] Auto-join Battle Royale triggered")
                                 joinQueue("BattleRoyaleFfa")
                             end
-                        else
-                            print("[DEBUG] Already joining, skipping auto-join")
                         end
-                    else
-                        print("[DEBUG] Already in active match, skipping auto-join")
                     end
-                else
-                    print("[DEBUG] PlayersLeft GUI visible, skipping auto-join")
                 end
-            else
-                print("[DEBUG] Loading screen visible, skipping auto-join")
             end
         end)
-        
-        if not success then
-            print("[DEBUG] Auto-join loop error:", err)
-        end
     end
 end)
 
--- UPDATED: Enhanced replay loop (waits for specific results + priority system)
+-- NEW: Simple button-based replay loop - FORCES through everything
 spawn(function()
-    local lastReplayTime = 0
+    local lastForceReplayTime = 0
     
     while true do
         task.wait(0.5)
         
-        if checkForMatchEnd() and hasValidReplayResult() then
+        if isPlayAgainButtonVisible() then
             local currentTime = tick()
             
-            -- Prevent spam replaying
-            if currentTime - lastReplayTime > 10 then
-                lastReplayTime = currentTime
+            -- Prevent spam force replaying
+            if currentTime - lastForceReplayTime > 5 then
+                lastForceReplayTime = currentTime
                 
-                local won = checkForWin()
-                local lost = checkForLoss()
-                local _, placement = checkBattleRoyalePlacement()
+                print("[DEBUG] Play Again button detected - executing force replay")
                 
-                if autoReplay5v5 and (won or lost) then
-                    print("[DEBUG] Auto-replay 5v5 triggered - Result:", won and "Won" or "Lost")
-                    spawn(function() replayQueue("StarBall5v5") end)
-                elseif autoReplay3v3 and (won or lost) then
-                    print("[DEBUG] Auto-replay 3v3 triggered - Result:", won and "Won" or "Lost")
-                    spawn(function() replayQueue("StarBall3v3") end)
-                elseif autoReplayBattleRoyale and placement then
-                    print("[DEBUG] Auto-replay Battle Royale triggered - Placement:", placement)
-                    spawn(function() replayQueue("BattleRoyaleFfa") end)
+                if autoReplay5v5 then
+                    spawn(function() forceReplay("StarBall5v5") end)
+                    library:Notify("🔥 FORCE REPLAY 5v5 - Button detected!", 3, "success")
+                elseif autoReplay3v3 then
+                    spawn(function() forceReplay("StarBall3v3") end)
+                    library:Notify("🔥 FORCE REPLAY 3v3 - Button detected!", 3, "success")
+                elseif autoReplayBattleRoyale then
+                    spawn(function() forceReplay("BattleRoyaleFfa") end)
+                    library:Notify("🔥 FORCE REPLAY Battle Royale - Button detected!", 3, "success")
                 end
             end
         end
@@ -1667,25 +1511,18 @@ spawn(function()
         task.wait(3) -- Check every 3 seconds
         
         if autoMapCenterTeleport then
-            print("[DEBUG] Auto Map Center Loop - Checking...")
-            
             local currentMap = getCurrentMap()
             if currentMap then
-                print("[DEBUG] Current map detected:", currentMap)
-                
                 -- Check if map changed or enough time passed
                 if currentMap ~= lastDetectedMap or tick() - lastMapCenterTime > 15 then
-                    print("[DEBUG] Triggering auto teleport to SAFE HEIGHT - Map:", currentMap, "Last:", lastDetectedMap)
                     autoTeleportToMapCenter()
                 end
-            else
-                print("[DEBUG] No map detected")
             end
         end
     end
 end)
 
--- UPDATED: UI Update Loop with ENHANCED status including REPLAY PRIORITY
+-- UPDATED: UI Update Loop with BUTTON STATUS
 spawn(function()
     while true do
         task.wait(1)
@@ -1696,20 +1533,20 @@ spawn(function()
         local loadingStatus = "Not Visible"
         local playersLeftStatus = "Not Visible"
         local enemyLeftStatus = "Not Visible"
-        local replayPriorityStatus = "None"
+        local playAgainStatus = "Not Visible"
         
-        -- NEW: Check replay priority status
-        if isReplayBlocking() then
-            replayPriorityStatus = "🔄 Blocking Auto-Join (" .. math.ceil(30 - (tick() - lastResultTime)) .. "s)"
-            status = "Replay Priority Active"
+        -- Check Play Again button status
+        if isPlayAgainButtonVisible() then
+            playAgainStatus = "🔥 VISIBLE - Force Replay Ready!"
+            status = "Play Again Button Detected"
         end
         
-        -- NEW: Check map status
+        -- Check map status
         local inMap, mapName = isInAnyMap()
         
         if inMap then
             status = "In Map (" .. mapName .. ") - Auto-Join Blocked"
-                        mapStatusLabel:SetText("Map Status: In " .. mapName .. " ❌")
+            mapStatusLabel:SetText("Map Status: In " .. mapName .. " ❌")
         else
             mapStatusLabel:SetText("Map Status: None ✅")
             if isLoadingScreenVisible() then
@@ -1728,8 +1565,8 @@ spawn(function()
                 status = "Joining Queue..."
                 matchStatus = "Joining..."
             elseif replaying then
-                status = "Replaying..."
-                matchStatus = "Replaying..."
+                status = "🔥 FORCE REPLAYING..."
+                matchStatus = "Force Replaying..."
             elseif teleportEnabled3v3 or teleportEnabled5v5 then
                 status = "Auto Teleport Active"
             elseif autoMapCenterTeleport then
@@ -1741,7 +1578,7 @@ spawn(function()
         loadingStatusLabel:SetText("Loading Screen: " .. loadingStatus)
         playersLeftStatusLabel:SetText("PlayersLeft GUI: " .. playersLeftStatus)
         enemyLeftStatusLabel:SetText("Enemy Left GUI: " .. enemyLeftStatus)
-        replayPriorityLabel:SetText("Replay Priority: " .. replayPriorityStatus)
+        playAgainStatusLabel:SetText("Play Again Button: " .. playAgainStatus)
         teleportStatusLabel:SetText("Teleport Count: " .. teleportCount)
         matchStatusLabel:SetText("Match Status: " .. matchStatus)
         currentConfigLabel:SetText("Current Config: " .. currentConfigName)
@@ -1783,8 +1620,7 @@ player.CharacterAdded:Connect(function(character)
             task.wait(0.5)
             doTeleport5v5()
         elseif autoMapCenterTeleport then
-            task.wait(2) -- Longer wait for character to fully load
-            print("[DEBUG] Character respawned - triggering SAFE map center teleport")
+            task.wait(2)
             autoTeleportToMapCenter()
         end
     end)
@@ -1801,7 +1637,7 @@ end)
 local Clock = os.clock()
 local Decimals = 2
 local Time = (string.format("%."..tostring(Decimals).."f", os.clock() - Clock))
-library:Notify("✅ Crazy Hub Replay Priority System loaded in " .. Time .. "s!", 5, "success")
+library:Notify("✅ Crazy Hub Button Based Replay loaded in " .. Time .. "s!", 5, "success")
 
 -- Show config load status
 if currentConfigName ~= "default" then
@@ -1809,16 +1645,16 @@ if currentConfigName ~= "default" then
 end
 
 -- Welcome notification with current date/time
-library:Notify("Welcome back, sigmaaboi! Loaded on 2025-06-26 09:23:27 UTC", 4, "success")
+library:Notify("Welcome back, sigmaaboi! Loaded on 2025-06-26 09:37:01 UTC", 4, "success")
 
 -- Safe height notification
 library:Notify("✅ SAFE HEIGHT: Player at Y=66, Platform at Y=64 (Dead zone avoided!)", 5, "success")
 
--- NEW: Replay priority system notification
-library:Notify("🔄 NEW: Replay Priority System - Blocks auto-join for 30s after results!", 5, "success")
+-- NEW: Button-based system notification
+library:Notify("🔥 NEW: Button Based Force Replay - Bypasses ALL checks!", 5, "success")
 
 -- Enhanced features notification
-library:Notify("🔧 FIXED: Remote Conflict Resolution & Map Detection!", 5, "success")
+library:Notify("🔧 BUTTON DETECTION: Play Again button forces immediate replay!", 5, "success")
 
 -- Create default config if it doesn't exist
 spawn(function()
