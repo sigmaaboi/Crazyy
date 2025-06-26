@@ -2,7 +2,6 @@
 -- Auto join variables
 local autoJoin5v5 = false
 local autoJoin3v3 = false
-local autoJoinBattleRoyale = false
 local joining = false
 
 -- Friend party variables
@@ -15,7 +14,6 @@ local friendsInParty = {}
 -- Auto replay variables (simplified)
 local autoReplay5v5 = false
 local autoReplay3v3 = false
-local autoReplayBattleRoyale = false
 local replaying = false
 local replayWaitTime = 5
 
@@ -25,18 +23,11 @@ local teleportEnabled5v5 = false
 local teleporting = false
 local lastPosition = Vector3.new(0, 0, 0)
 
--- FIXED: Auto map center teleport variables
-local autoMapCenterTeleport = false
-local customPlatforms = {}
-local mapCenters = {}
-local lastDetectedMap = nil
-local lastMapCenterTime = 0
-
 -- Debug variables
 local teleportCount = 0
 local lastTeleportTime = 0
 
--- NEW: Combat system variables
+-- UPDATED: Combat system variables
 local autoAttackEnabled = false
 local aimLockEnabled = false
 local enemyVisualsEnabled = false
@@ -50,6 +41,9 @@ local enemyOutlines = {}
 local activateSkillRemotePath = "RemoteService/Remotes/ActivateSkill/E"
 local ActivateSkillRemote = nil
 local remotesReady = false
+
+-- Grass detection system
+local grassInstances = {}
 
 -- Config variables (Updated structure)
 local autoLoadConfig = true
@@ -68,15 +62,58 @@ local mapNames = {
     "Wisteria"
 }
 
--- FIXED: Predefined safe positions for maps with correct heights (Y: 66 to avoid dead zone)
-local mapSafePositions = {
-    ["CapeCanaveral"] = Vector3.new(-1046, 66, 889),
-    ["ChuninExams"] = Vector3.new(0, 66, 0),
-    ["HuecoMundo"] = Vector3.new(0, 66, 0),
-    ["Namek"] = Vector3.new(0, 66, 0),
-    ["Sandora"] = Vector3.new(0, 66, 0),
-    ["Wisteria"] = Vector3.new(0, 66, 0)
-}
+-- IMPROVED: Grass detection function that gets ALL grass objects
+local function updateGrassInstances()
+    grassInstances = {}
+    
+    -- Check for grass in all known maps
+    for _, mapName in pairs(mapNames) do
+        local mapFolder = workspace:FindFirstChild(mapName)
+        if mapFolder then
+            -- Most maps have grass under Dynamic folder
+            local dynamicFolder = mapFolder:FindFirstChild("Dynamic")
+            if dynamicFolder then
+                -- Look for grass folder
+                local grassFolder = dynamicFolder:FindFirstChild("Grass")
+                if grassFolder then
+                    -- Add all grass children to exclusion list
+                    for _, grass in pairs(grassFolder:GetChildren()) do
+                        table.insert(grassInstances, grass)
+                    end
+                    print("Found " .. #grassFolder:GetChildren() .. " grass instances in " .. mapName)
+                end
+                
+                -- Some maps might have it under a different name
+                for _, folder in pairs(dynamicFolder:GetChildren()) do
+                    if string.find(string.lower(folder.Name), "grass") or 
+                       string.find(string.lower(folder.Name), "plant") or 
+                       string.find(string.lower(folder.Name), "bush") or
+                       string.find(string.lower(folder.Name), "foliage") then
+                        for _, item in pairs(folder:GetChildren()) do
+                            table.insert(grassInstances, item)
+                        end
+                        print("Found " .. #folder:GetChildren() .. " foliage instances in " .. folder.Name)
+                    end
+                end
+            end
+            
+            -- Some maps might have grass at root level
+            for _, folder in pairs(mapFolder:GetChildren()) do
+                if string.find(string.lower(folder.Name), "grass") or 
+                   string.find(string.lower(folder.Name), "plant") or 
+                   string.find(string.lower(folder.Name), "bush") or
+                   string.find(string.lower(folder.Name), "foliage") then
+                    for _, item in pairs(folder:GetChildren()) do
+                        table.insert(grassInstances, item)
+                    end
+                    print("Found " .. #folder:GetChildren() .. " foliage instances in root of " .. mapName)
+                end
+            end
+        end
+    end
+    
+    print("Total foliage instances found for grass penetration: " .. #grassInstances)
+end
 
 -- NEW: Check if player is in any map
 local function isInAnyMap()
@@ -110,19 +147,6 @@ local function isLoadingScreenVisible()
             return true
         end
         
-        return false
-    end)
-    
-    return success and result
-end
-
--- Function to check if PlayersLeft GUI is visible (Battle Royale lobby)
-local function isPlayersLeftVisible()
-    local success, result = pcall(function()
-        local playersLeftGui = game:GetService("Players").LocalPlayer.PlayerGui.CoreSafeInsets.Gamemode.PlayersLeft.PlayersHolder
-        if playersLeftGui and playersLeftGui.Visible then
-            return true
-        end
         return false
     end)
     
@@ -178,182 +202,6 @@ local function isPlayAgainButtonVisible()
     return success and result
 end
 
--- FIXED: Function to calculate map center dynamically with SAFE HEIGHT (Y: 66)
-local function calculateMapCenter(mapName)
-    local success, result = pcall(function()
-        local mapFolder = workspace:FindFirstChild(mapName)
-        if not mapFolder then
-            return mapSafePositions[mapName] or Vector3.new(0, 66, 0)
-        end
-        
-        local minX, maxX = math.huge, -math.huge
-        local minZ, maxZ = math.huge, -math.huge
-        local partCount = 0
-        
-        -- Recursively find all parts in the map (ignoring Y for safety)
-        local function scanParts(parent, depth)
-            depth = depth or 0
-            if depth > 10 then return end -- Prevent infinite recursion
-            
-            for _, obj in pairs(parent:GetChildren()) do
-                if obj:IsA("BasePart") and obj.CanCollide then -- Only count solid parts
-                    local pos = obj.Position
-                    local size = obj.Size
-                    
-                    -- Calculate X and Z bounds only (ignore Y for safety)
-                    minX = math.min(minX, pos.X - size.X/2)
-                    maxX = math.max(maxX, pos.X + size.X/2)
-                    minZ = math.min(minZ, pos.Z - size.Z/2)
-                    maxZ = math.max(maxZ, pos.Z + size.Z/2)
-                    
-                    partCount = partCount + 1
-                elseif obj:IsA("Folder") or obj:IsA("Model") then
-                    scanParts(obj, depth + 1)
-                end
-            end
-        end
-        
-        scanParts(mapFolder)
-        
-        if partCount > 0 then
-            -- Calculate center point with FIXED SAFE HEIGHT
-            local centerX = (minX + maxX) / 2
-            local centerY = 66 -- FIXED: Safe height to avoid dead zone
-            local centerZ = (minZ + maxZ) / 2
-            
-            local center = Vector3.new(centerX, centerY, centerZ)
-            return center
-        else
-            return mapSafePositions[mapName] or Vector3.new(0, 66, 0)
-        end
-    end)
-    
-    if success and result then
-        return result
-    else
-        return mapSafePositions[mapName] or Vector3.new(0, 66, 0)
-    end
-end
-
--- FIXED: Function to create platform at position with SAFE HEIGHT (INVISIBLE)
-local function createPlatform(position, mapName)
-    -- Ensure platform is at safe height
-    local safePosition = Vector3.new(position.X, 64, position.Z) -- Platform at Y: 64, player at Y: 66
-    
-    local success, platform = pcall(function()
-        local part = Instance.new("Part")
-        part.Name = "CrazyHub_Platform_" .. (mapName or "Custom")
-        part.Size = Vector3.new(25, 2, 25) -- Even bigger platform for safety
-        part.Position = safePosition
-        part.Anchored = true
-        part.CanCollide = true
-        part.Material = Enum.Material.ForceField
-        part.BrickColor = BrickColor.new("Bright green") -- Green for safe zone
-        part.Transparency = 1 -- INVISIBLE
-        part.Shape = Enum.PartType.Block
-        part.TopSurface = Enum.SurfaceType.Smooth
-        part.BottomSurface = Enum.SurfaceType.Smooth
-        
-        part.Parent = workspace
-        return part
-    end)
-    
-    if success then
-        return platform
-    else
-        return nil
-    end
-end
-
--- Function to remove platforms
-local function removePlatforms()
-    local success = pcall(function()
-        -- Remove all platforms
-        for mapName, platform in pairs(customPlatforms) do
-            if platform and platform.Parent then
-                platform:Destroy()
-            end
-        end
-        customPlatforms = {}
-        
-        -- Also remove any existing platforms with our naming pattern
-        for _, obj in pairs(workspace:GetChildren()) do
-            if obj.Name:find("CrazyHub_Platform") then
-                obj:Destroy()
-            end
-        end
-    end)
-    
-    return success
-end
-
--- FIXED: Function to auto teleport to current map center with SAFE HEIGHT
-local function autoTeleportToMapCenter()
-    if not autoMapCenterTeleport then return end
-    
-    local success, err = pcall(function()
-        local player = game.Players.LocalPlayer
-        if not player or not player.Character then
-            return
-        end
-        
-        local hrp = player.Character:FindFirstChild("HumanoidRootPart")
-        if not hrp then
-            return
-        end
-        
-        -- Get current map
-        local currentMap = getCurrentMap()
-        if not currentMap then
-            return
-        end
-        
-        -- Check if this is a new map or first time
-        local shouldTeleport = false
-        if currentMap ~= lastDetectedMap then
-            shouldTeleport = true
-            lastDetectedMap = currentMap
-        elseif tick() - lastMapCenterTime > 10 then -- Also teleport every 10 seconds as backup
-            shouldTeleport = true
-        end
-        
-        if not shouldTeleport then
-            return
-        end
-        
-        -- Calculate center with safe height
-        local center = calculateMapCenter(currentMap)
-        if not center then
-            return
-        end
-        
-        mapCenters[currentMap] = center
-        
-        -- Remove existing platform for this map
-        if customPlatforms[currentMap] and customPlatforms[currentMap].Parent then
-            customPlatforms[currentMap]:Destroy()
-        end
-        
-        -- Create new platform at the center
-        customPlatforms[currentMap] = createPlatform(center, currentMap)
-        
-        -- Wait a frame for platform to spawn
-        task.wait(0.1)
-        
-        -- FIXED: Teleport player to SAFE HEIGHT (Y: 66)
-        local teleportPosition = Vector3.new(center.X, 66, center.Z) -- Safe height
-        hrp.CFrame = CFrame.new(teleportPosition)
-        
-        teleportCount = teleportCount + 1
-        lastMapCenterTime = tick()
-        
-        -- Show notification
-        if library then
-            library:Notify("Auto Win Battle Royale for " .. currentMap .. "<3", 4, "success")
-        end
-    end)
-end
-
 -- NEW: Combat System Functions
 -- IMPROVED: Find remote with exact path
 local function tryGetRemotes()
@@ -374,7 +222,7 @@ local function tryGetRemotes()
     return nil
 end
 
--- Wall check that doesn't interfere with aim or attack functionality
+-- FIXED: Wall check with TRUE grass penetration - excludes ALL grass from raycast
 local function isWallBetweenTarget(target)
     if not wallCheckEnabled then return false end
     if not target or not target.character then return false end
@@ -387,7 +235,6 @@ local function isWallBetweenTarget(target)
     if not targetHRP then return false end
     
     local direction = (targetHRP.Position - playerHRP.Position)
-    local distance = direction.Magnitude
     local raycastParams = RaycastParams.new()
     
     raycastParams.FilterType = Enum.RaycastFilterType.Exclude
@@ -400,15 +247,23 @@ local function isWallBetweenTarget(target)
         end
     end
     
+    -- CRITICAL FIX: Add ALL grass instances to exclude list so raycast ignores them completely
+    for _, grass in pairs(grassInstances) do
+        table.insert(excludeList, grass)
+    end
+    
     raycastParams.FilterDescendantsInstances = excludeList
     
     local raycastResult = workspace:Raycast(playerHRP.Position, direction, raycastParams)
     
     if raycastResult then
-        return true
+        local hitObject = raycastResult.Instance
+        print("Wall detected (after grass exclusion):", hitObject:GetFullName(), "- blocking shot")
+        return true -- Hit a real wall/obstacle (grass was excluded from raycast)
+    else
+        print("Clear shot - no walls detected (grass ignored)")
+        return false -- Clear shot (grass was ignored)
     end
-    
-    return false
 end
 
 -- Enemy functions
@@ -510,7 +365,7 @@ local function updateEnemyVisuals()
                             enemyOutlines[character].FillColor = Color3.fromRGB(255, 255, 0)
                             enemyOutlines[character].OutlineColor = Color3.fromRGB(255, 0, 0)
                         else
-                            -- Current target - orange
+                            -- Current target - orange (can shoot through grass)
                             enemyOutlines[character].FillColor = Color3.fromRGB(255, 165, 0)
                             enemyOutlines[character].OutlineColor = Color3.fromRGB(255, 255, 0)
                         end
@@ -520,7 +375,7 @@ local function updateEnemyVisuals()
                         enemyOutlines[character].FillColor = Color3.fromRGB(255, 0, 0)
                         enemyOutlines[character].FillTransparency = 0.7
                         
-                        -- Check if this enemy is behind a wall
+                        -- Check if this enemy is behind a wall (grass ignored)
                         if wallCheckEnabled then
                             local tempTarget = {character = character}
                             if isWallBetweenTarget(tempTarget) then
@@ -610,11 +465,14 @@ local function performAttack(targetDirection)
         return false
     end
     
-    -- Wall check (if enabled)
+    -- FIXED: Wall check (if enabled) - now properly ignores grass
     if wallCheckEnabled and currentTarget then
         local hasWall = isWallBetweenTarget(currentTarget)
         if hasWall then
+            print("Attack blocked: Real wall detected between player and target (grass ignored)")
             return false
+        else
+            print("Attack allowed: Clear shot or only grass between player and target")
         end
     end
     
@@ -635,6 +493,8 @@ local function performAttack(targetDirection)
             -- Otherwise try with the WaitForChild path as a fallback
             game:GetService("ReplicatedStorage"):WaitForChild("RemoteService/Remotes"):WaitForChild("ActivateSkill"):WaitForChild("E"):FireServer(unpack(args))
         end
+        
+        print("Attack fired successfully - shooting through grass or clear line of sight")
     end)
     
     if success then
@@ -666,7 +526,7 @@ local function performManualAttack()
     return success
 end
 
--- Config System Functions (FIXED)
+-- Config System Functions
 local function ensureFolders()
     if not isfolder(hubFolder) then
         makefolder(hubFolder)
@@ -707,19 +567,16 @@ local function saveConfig(configName)
         -- Original settings
         autoJoin5v5 = autoJoin5v5,
         autoJoin3v3 = autoJoin3v3,
-        autoJoinBattleRoyale = autoJoinBattleRoyale,
         selectedFriends = selectedFriends,
         inviteFriend = inviteFriend,
         autoInviteFriends = autoInviteFriends,
         autoReplay5v5 = autoReplay5v5,
         autoReplay3v3 = autoReplay3v3,
-        autoReplayBattleRoyale = autoReplayBattleRoyale,
         teleportEnabled3v3 = teleportEnabled3v3,
         teleportEnabled5v5 = teleportEnabled5v5,
-        autoMapCenterTeleport = autoMapCenterTeleport,
         replayWaitTime = replayWaitTime,
         
-        -- NEW: Combat settings
+        -- Combat settings
         autoAttackEnabled = autoAttackEnabled,
         aimLockEnabled = aimLockEnabled,
         enemyVisualsEnabled = enemyVisualsEnabled, 
@@ -770,19 +627,16 @@ local function loadConfig(configName)
     -- Apply config settings - original settings
     autoJoin5v5 = config.autoJoin5v5 or false
     autoJoin3v3 = config.autoJoin3v3 or false
-    autoJoinBattleRoyale = config.autoJoinBattleRoyale or false
     selectedFriends = config.selectedFriends or {}
     inviteFriend = config.inviteFriend or false
     autoInviteFriends = config.autoInviteFriends or false
     autoReplay5v5 = config.autoReplay5v5 or false
     autoReplay3v3 = config.autoReplay3v3 or false
-    autoReplayBattleRoyale = config.autoReplayBattleRoyale or false
     teleportEnabled3v3 = config.teleportEnabled3v3 or false
     teleportEnabled5v5 = config.teleportEnabled5v5 or false
-    autoMapCenterTeleport = config.autoMapCenterTeleport or false
     replayWaitTime = config.replayWaitTime or 5
     
-    -- NEW: Combat settings
+    -- Combat settings
     autoAttackEnabled = config.autoAttackEnabled or false
     aimLockEnabled = config.aimLockEnabled or false
     enemyVisualsEnabled = config.enemyVisualsEnabled or false
@@ -803,7 +657,6 @@ local function loadConfig(configName)
     return true, "Config loaded successfully"
 end
 
--- FIXED getConfigList function
 local function getConfigList()
     ensureFolders()
     local configs = {}
@@ -978,11 +831,6 @@ local function joinQueue(gameMode)
         return
     end
     
-    -- STRICT CHECK: PlayersLeft GUI check
-    if isPlayersLeftVisible() then
-        return
-    end
-    
     -- STRICT CHECK: Active match check
     if isInActiveMatch() then
         return
@@ -998,12 +846,7 @@ local function joinQueue(gameMode)
     joining = true
 
     local success, err = pcall(function()
-        if gameMode == "BattleRoyaleFfa" then
-            local args = {"BattleRoyaleFfa"}
-            game:GetService("ReplicatedStorage"):WaitForChild("RemoteService/Remotes"):WaitForChild("JoinQueue"):WaitForChild("E"):FireServer(unpack(args))
-        else
-            game:GetService("ReplicatedStorage")["RemoteService/Remotes"].JoinQueue.E:FireServer(gameMode)
-        end
+        game:GetService("ReplicatedStorage")["RemoteService/Remotes"].JoinQueue.E:FireServer(gameMode)
     end)
 
     task.wait(1)
@@ -1022,12 +865,7 @@ local function forceReplay(gameMode)
     task.wait(replayWaitTime)
 
     local success, err = pcall(function()
-        if gameMode == "BattleRoyaleFfa" then
-            local args = {"BattleRoyaleFfa"}
-            game:GetService("ReplicatedStorage"):WaitForChild("RemoteService/Remotes"):WaitForChild("JoinQueue"):WaitForChild("E"):FireServer(unpack(args))
-        else
-            game:GetService("ReplicatedStorage")["RemoteService/Remotes"].JoinQueue.E:FireServer(gameMode)
-        end
+        game:GetService("ReplicatedStorage")["RemoteService/Remotes"].JoinQueue.E:FireServer(gameMode)
     end)
 
     task.wait(0.5)
@@ -1214,7 +1052,6 @@ local autoJoinToggle5v5 = mainTab:NewToggle("Auto Join 5v5", autoJoin5v5, functi
     autoJoin5v5 = state
     if state then 
         autoJoin3v3 = false
-        autoJoinBattleRoyale = false
         library:Notify("Auto Join 5v5 Enabled!", 3, "success")
     end
 end)
@@ -1223,18 +1060,7 @@ local autoJoinToggle3v3 = mainTab:NewToggle("Auto Join 3v3", autoJoin3v3, functi
     autoJoin3v3 = state
     if state then 
         autoJoin5v5 = false
-        autoJoinBattleRoyale = false
         library:Notify("Auto Join 3v3 Enabled!", 3, "success")
-    end
-end)
-
--- Battle Royale Auto Join Toggle
-local autoJoinBattleRoyaleToggle = mainTab:NewToggle("Auto Join Battle Royale", autoJoinBattleRoyale, function(state)
-    autoJoinBattleRoyale = state
-    if state then 
-        autoJoin5v5 = false
-        autoJoin3v3 = false
-        library:Notify("Auto Join Battle Royale Enabled!", 3, "success")
     end
 end)
 
@@ -1243,7 +1069,6 @@ local autoReplayToggle5v5 = mainTab:NewToggle("Auto Replay 5v5", autoReplay5v5, 
     autoReplay5v5 = state
     if state then 
         autoReplay3v3 = false
-        autoReplayBattleRoyale = false
         library:Notify("Auto Replay 5v5 Enabled!", 3, "success")
     end
 end)
@@ -1252,18 +1077,7 @@ local autoReplayToggle3v3 = mainTab:NewToggle("Auto Replay 3v3", autoReplay3v3, 
     autoReplay3v3 = state
     if state then 
         autoReplay5v5 = false
-        autoReplayBattleRoyale = false
         library:Notify("Auto Replay 3v3 Enabled!", 3, "success")
-    end
-end)
-
--- Battle Royale Auto Replay Toggle
-local autoReplayBattleRoyaleToggle = mainTab:NewToggle("Auto Replay Battle Royale", autoReplayBattleRoyale, function(state)
-    autoReplayBattleRoyale = state
-    if state then 
-        autoReplay5v5 = false
-        autoReplay3v3 = false
-        library:Notify("Auto Replay Battle Royale Enabled!", 3, "success")
     end
 end)
 
@@ -1286,7 +1100,6 @@ local teleportToggle3v3 = mainTab:NewToggle("Auto Win (3v3)", teleportEnabled3v3
     teleportEnabled3v3 = state
     if state then 
         teleportEnabled5v5 = false
-        autoMapCenterTeleport = false
         teleportCount = 0
         lastTeleportTime = 0
         library:Notify("3v3 Auto Win Enabled!", 3, "alert")
@@ -1302,7 +1115,6 @@ local teleportToggle5v5 = mainTab:NewToggle("Auto Win (5v5)", teleportEnabled5v5
     teleportEnabled5v5 = state
     if state then 
         teleportEnabled3v3 = false
-        autoMapCenterTeleport = false
         teleportCount = 0
         lastTeleportTime = 0
         library:Notify("5v5 Auto Win Enabled!", 3, "alert")
@@ -1311,32 +1123,6 @@ local teleportToggle5v5 = mainTab:NewToggle("Auto Win (5v5)", teleportEnabled5v5
             lastPosition = game.Players.LocalPlayer.Character.HumanoidRootPart.Position
         end
         doTeleport5v5()
-    end
-end)
-
--- FIXED: Auto Map Center Teleport Toggle with SAFE HEIGHT
-local autoMapCenterToggle = mainTab:NewToggle("Auto Win Battle Royale", autoMapCenterTeleport, function(state)
-    autoMapCenterTeleport = state
-    if state then 
-        teleportEnabled3v3 = false
-        teleportEnabled5v5 = false
-        teleportCount = 0
-        lastDetectedMap = nil -- Reset map detection
-        lastMapCenterTime = 0
-        
-        -- Remove any existing platforms first
-        removePlatforms()
-        
-        library:Notify("Auto Win Battle Royale Enabled!", 4, "success")
-        
-        -- Immediately teleport to current map center
-        task.wait(0.5) -- Small delay to ensure everything is ready
-        autoTeleportToMapCenter()
-    else
-        -- Clean up platforms when disabled
-        removePlatforms()
-        lastDetectedMap = nil
-        library:Notify("Auto Win Battle Royale Disabled!", 3, "alert")
     end
 end)
 
@@ -1424,7 +1210,7 @@ partyTab:NewSection("Party Status")
 local partyStatusLabel = partyTab:NewLabel("Party Mode: Disabled", "left")
 local friendsInPartyLabel = partyTab:NewLabel("Friends in Party: 0", "left")
 
--- NEW: Add the Combat tab (without Manual Controls and Status Info sections)
+-- NEW: Add the Combat tab with TRUE grass penetration
 local combatTab = library:NewTab("Legit")
 
 -- Combat Settings Section
@@ -1434,7 +1220,7 @@ combatTab:NewSection("Player Aid System")
 local autoAttackToggle = combatTab:NewToggle("Auto Attack", autoAttackEnabled, function(state)
     autoAttackEnabled = state
     if state then
-        library:Notify("Auto Attack Enabled! " .. (wallCheckEnabled and "(With obstruction check)" or "(No obstruction check)"), 3, "success")
+        library:Notify("Auto Attack Enabled! " .. (wallCheckEnabled and "(With TRUE grass penetration)" or "(No wall check)"), 3, "success")
     else
         library:Notify("Auto Attack Disabled!", 3, "alert")
     end
@@ -1453,9 +1239,9 @@ end)
 local wallCheckToggle = combatTab:NewToggle("Wall Check", wallCheckEnabled, function(state)
     wallCheckEnabled = state
     if state then
-        library:Notify("Obstruction Check Enabled! Won't attack through walls.", 3, "success")
+        library:Notify("Wall Check Enabled! TRUE grass penetration - raycast ignores ALL grass!", 3, "success")
     else
-        library:Notify("Obstruction Check Disabled! Will attack through obstacles.", 3, "alert")
+        library:Notify("Wall Check Disabled! Will attack through everything.", 3, "alert")
     end
 end)
 
@@ -1463,6 +1249,41 @@ end)
 combatTab:NewSlider("Attack Range", "", false, "", {min = 10, max = 100, default = attackRange}, function(val) attackRange = val end)
 combatTab:NewSlider("Aim Smoothness", "", false, "", {min = 1, max = 10, default = math.floor(aimSmoothness * 10)}, function(val) aimSmoothness = val / 10 end)
 combatTab:NewSlider("Fire Rate Delay", "ms", false, "", {min = 50, max = 500, default = math.floor(autoFireRate * 1000)}, function(val) autoFireRate = val / 1000 end)
+
+-- IMPROVED: Grass detection controls with better explanation
+combatTab:NewSection("Grass/Foliage Detection")
+
+combatTab:NewButton("Update Grass Detection", function()
+    updateGrassInstances()
+    library:Notify("Found " .. #grassInstances .. " grass objects! Wall check will completely ignore these.", 3, "success")
+end)
+
+combatTab:NewToggle("Show Detected Objects", false, function(state)
+    if state then
+        for _, grass in pairs(grassInstances) do
+            pcall(function()
+                local h = Instance.new("Highlight")
+                h.Name = "GrassHighlight"
+                h.FillColor = Color3.fromRGB(0, 255, 0)
+                h.OutlineColor = Color3.fromRGB(0, 128, 0)
+                h.FillTransparency = 0.8
+                h.OutlineTransparency = 0.5
+                h.Adornee = grass
+                h.Parent = grass
+            end)
+        end
+        library:Notify("Showing " .. #grassInstances .. " grass objects that will be ignored", 3, "success")
+    else
+        for _, grass in pairs(grassInstances) do
+            pcall(function()
+                if grass:FindFirstChild("GrassHighlight") then
+                    grass.GrassHighlight:Destroy()
+                end
+            end)
+        end
+        library:Notify("Hiding grass highlights", 3, "alert")
+    end
+end)
 
 -- Visual features
 combatTab:NewSection("Visual Options")
@@ -1477,7 +1298,7 @@ combatTab:NewToggle("Player Highlight", enemyVisualsEnabled, function(state)
     end
 end)
 
--- Create Settings Tab
+-- Create Settings Tab (same as before)
 local settingsTab = library:NewTab("Settings")
 
 -- Config Section
@@ -1658,16 +1479,13 @@ end)
 settingsTab:NewButton("Reset to Default Settings", function()
     autoJoin5v5 = false
     autoJoin3v3 = false
-    autoJoinBattleRoyale = false
     selectedFriends = {}
     inviteFriend = false
     autoInviteFriends = false
     autoReplay5v5 = false
     autoReplay3v3 = false
-    autoReplayBattleRoyale = false
     teleportEnabled3v3 = false
     teleportEnabled5v5 = false
-    autoMapCenterTeleport = false
     autoLoadConfig = true
     replayWaitTime = 5
     currentConfigName = "default"
@@ -1692,7 +1510,8 @@ settingsTab:NewLabel("Version: 2.3", "left")
 settingsTab:NewLabel("Created by: Crazy", "left")
 settingsTab:NewLabel("Discord user: CraZ(z)Zy (craz_zy)", "left")
 
--- Continue from the interrupted line
+-- NEW: Discord Server Section
+settingsTab:NewSection("Discord Server")
 settingsTab:NewButton("Copy Discord Server Link", function()
     local discordLink = "https://discord.gg/8KWX2N8m"
     setclipboard(discordLink)
@@ -1709,13 +1528,18 @@ settingsTab:NewLabel("Auto-Load File: auto_load.txt", "left")
 -- Statistics
 local configCountLabel = settingsTab:NewLabel("Total Configs: 0", "left")
 
+-- Run initial grass detection
+spawn(function()
+    updateGrassInstances()
+end)
+
 -- CRITICAL FIX: Much more aggressive remote check for combat system
 spawn(function()
     while true do
         ActivateSkillRemote = tryGetRemotes()
         if ActivateSkillRemote then
             remotesReady = true
-            library:Notify("Player Assist systems ready! All features unlocked.", 3, "success")
+            library:Notify("Player Assist systems ready! TRUE grass penetration active.", 3, "success")
             break
         else
             remotesReady = false
@@ -1750,16 +1574,12 @@ spawn(function()
         
         local success, err = pcall(function()
             if not isLoadingScreenVisible() then
-                if not isPlayersLeftVisible() then
-                    if not isInActiveMatch() then
-                        if not joining then
-                            if autoJoin5v5 then
-                                joinQueue("StarBall5v5")
-                            elseif autoJoin3v3 then
-                                joinQueue("StarBall3v3")
-                            elseif autoJoinBattleRoyale then
-                                joinQueue("BattleRoyaleFfa")
-                            end
+                if not isInActiveMatch() then
+                    if not joining then
+                        if autoJoin5v5 then
+                            joinQueue("StarBall5v5")
+                        elseif autoJoin3v3 then
+                            joinQueue("StarBall3v3")
                         end
                     end
                 end
@@ -1788,9 +1608,6 @@ spawn(function()
                 elseif autoReplay3v3 then
                     spawn(function() forceReplay("StarBall3v3") end)
                     library:Notify("REPLAY 3v3 !", 3, "success")
-                elseif autoReplayBattleRoyale then
-                    spawn(function() forceReplay("BattleRoyaleFfa") end)
-                    library:Notify("REPLAY Battle Royale", 3, "success")
                 end
             end
         end
@@ -1839,23 +1656,6 @@ spawn(function()
     end
 end)
 
--- Auto Map Center Teleport Loop
-spawn(function()
-    while true do
-        task.wait(3) -- Check every 3 seconds
-        
-        if autoMapCenterTeleport then
-            local currentMap = getCurrentMap()
-            if currentMap then
-                -- Check if map changed or enough time passed
-                if currentMap ~= lastDetectedMap or tick() - lastMapCenterTime > 15 then
-                    autoTeleportToMapCenter()
-                end
-            end
-        end
-    end
-end)
-
 -- Combat system auto-attack loop
 spawn(function()
     while true do
@@ -1877,7 +1677,7 @@ spawn(function()
                 -- Get attack direction
                 local attackDirection = getDirectionToTarget(target)
                 
-                -- Directly attack (wall check is handled inside)
+                -- Directly attack (wall check with grass penetration is handled inside)
                 performAttack(attackDirection)
             end
         else
@@ -1891,6 +1691,18 @@ spawn(function()
     while true do
         task.wait(0.2)
         if enemyVisualsEnabled then updateEnemyVisuals() end
+    end
+end)
+
+-- NEW: Map change detection to update grass instances
+workspace.ChildAdded:Connect(function(child)
+    if table.find(mapNames, child.Name) then
+        task.wait(2) -- Wait for the map to fully load
+        updateGrassInstances()
+        print("Map changed to " .. child.Name .. ", updated grass instances")
+        if library then
+            library:Notify("Map changed! Updated grass detection for " .. child.Name, 3, "success")
+        end
     end
 end)
 
@@ -1911,8 +1723,6 @@ spawn(function()
         else
             if isLoadingScreenVisible() then
                 status = "Loading Screen Active"
-            elseif isPlayersLeftVisible() then
-                status = "In Battle Royale Lobby"
             elseif isEnemyLeftVisible() then
                 status = "Enemy Left - Replay Blocked"
             elseif isInActiveMatch() then
@@ -1926,22 +1736,17 @@ spawn(function()
                 matchStatus = "Replaying..."
             elseif teleportEnabled3v3 or teleportEnabled5v5 then
                 status = "Auto Teleport Active"
-            elseif autoMapCenterTeleport then
-                status = "Safe Map Center Active"
             end
         end
         
         teleportStatusLabel:SetText("Teleport Count: " .. teleportCount)
         currentConfigLabel:SetText("Current Config: " .. currentConfigName)
         autoLoadLabel:SetText("Auto Load: " .. (autoLoadConfig and "Enabled" or "Disabled"))
-        replayWaitLabel:SetText("Replay Wait Time: " .. replayWaitTime .. "s")
+               replayWaitLabel:SetText("Replay Wait Time: " .. replayWaitTime .. "s")
         
-        -- Update map with safety info
+        -- Update map display
         local currentMap = getCurrentMap()
         local mapText = "Current Map: " .. (currentMap or "Unknown")
-        if autoMapCenterTeleport and currentMap then
-            mapText = mapText .. " (Safe Mode)"
-        end
         mapLabel:SetText(mapText)
         
         -- Update selected friends display
@@ -1982,18 +1787,8 @@ player.CharacterAdded:Connect(function(character)
         elseif teleportEnabled5v5 then
             task.wait(0.5)
             doTeleport5v5()
-        elseif autoMapCenterTeleport then
-            task.wait(2)
-            autoTeleportToMapCenter()
         end
     end)
-end)
-
--- Clean up on script end
-game:GetService("Players").PlayerRemoving:Connect(function(player)
-    if player == game.Players.LocalPlayer then
-        removePlatforms()
-    end
 end)
 
 -- Success notification
@@ -2008,7 +1803,7 @@ if currentConfigName ~= "default" then
 end
 
 -- Welcome notification with current date/time
-library:Notify("Welcome back", 4, "success")
+library:Notify("Welcome back " .. game.Players.LocalPlayer.Name .. "!", 4, "success")
 
 -- Discord server notification with clipboard copy
 spawn(function()
@@ -2025,5 +1820,21 @@ spawn(function()
     if not isfile(getConfigPath("default")) then
         saveConfig("default")
         library:Notify("Default config created!", 3, "success")
+    end
+end)
+
+-- NEW: TRUE grass penetration status notification
+spawn(function()
+    task.wait(5)
+    library:Notify("TRUE Grass Penetration Active! Raycast completely ignores all grass/foliage!", 4, "success")
+end)
+
+-- FINAL: Grass penetration confirmation
+spawn(function()
+    task.wait(8)
+    if #grassInstances > 0 then
+        library:Notify("✅ " .. #grassInstances .. " grass objects detected and excluded from wall detection!", 4, "success")
+    else
+        library:Notify("⚠️ No grass detected yet. Try 'Update Grass Detection' button in Legit tab.", 4, "alert")
     end
 end)
