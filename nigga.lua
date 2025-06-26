@@ -16,6 +16,7 @@ local autoReplay5v5 = false
 local autoReplay3v3 = false
 local autoReplayBattleRoyale = false
 local replaying = false
+local replayWaitTime = 5 -- Wait time before checking replay conditions
 
 -- Teleport toggles for each mode
 local teleportEnabled3v3 = false
@@ -61,13 +62,28 @@ local mapSafePositions = {
     ["Wisteria"] = Vector3.new(0, 66, 0)
 }
 
--- Function to check if loading screen is visible
+-- FIXED: Enhanced function to check if loading screen is visible
 local function isLoadingScreenVisible()
     local success, result = pcall(function()
-        local loadingScreen = game:GetService("Players").LocalPlayer.PlayerGui:FindFirstChild("ReactLoadingScreen")
-        if loadingScreen and loadingScreen.Visible then
+        -- Check ReactLoadingScreen
+        local reactLoadingScreen = game:GetService("Players").LocalPlayer.PlayerGui:FindFirstChild("ReactLoadingScreen")
+        if reactLoadingScreen and reactLoadingScreen.Visible then
             return true
         end
+        
+        -- Check any other loading screens
+        local playerGui = game:GetService("Players").LocalPlayer.PlayerGui
+        for _, gui in pairs(playerGui:GetChildren()) do
+            if gui.Name:lower():find("loading") and gui.Visible then
+                return true
+            end
+        end
+        
+        -- Check if player is still loading into game
+        if not game:GetService("Players").LocalPlayer.Character then
+            return true
+        end
+        
         return false
     end)
     
@@ -81,6 +97,36 @@ local function isPlayersLeftVisible()
         if playersLeftGui and playersLeftGui.Visible then
             return true
         end
+        return false
+    end)
+    
+    return success and result
+end
+
+-- ADDED: Function to check if enemy left GUI is visible
+local function isEnemyLeftVisible()
+    local success, result = pcall(function()
+        -- Check for enemy left notification
+        local playerGui = game:GetService("Players").LocalPlayer.PlayerGui
+        
+        -- Check common enemy left GUI patterns
+        for _, gui in pairs(playerGui:GetChildren()) do
+            if gui.Visible then
+                for _, element in pairs(gui:GetDescendants()) do
+                    if element:IsA("TextLabel") then
+                        local text = element.Text:lower()
+                        if text:find("enemy") and text:find("left") then
+                            return true
+                        elseif text:find("opponent") and text:find("left") then
+                            return true
+                        elseif text:find("disconnected") then
+                            return true
+                        end
+                    end
+                end
+            end
+        end
+        
         return false
     end)
     
@@ -413,6 +459,7 @@ local function saveConfig(configName)
         autoMapCenterTeleport = autoMapCenterTeleport,
         autoLoadConfig = autoLoadConfig,
         currentConfigName = configName,
+        replayWaitTime = replayWaitTime,
         savedBy = game.Players.LocalPlayer.Name,
         savedAt = os.time(),
         version = "2.2"
@@ -463,6 +510,7 @@ local function loadConfig(configName)
     teleportEnabled5v5 = config.teleportEnabled5v5 or false
     autoMapCenterTeleport = config.autoMapCenterTeleport or false
     autoLoadConfig = config.autoLoadConfig ~= nil and config.autoLoadConfig or true
+    replayWaitTime = config.replayWaitTime or 5
     currentConfigName = configName
     
     -- Update auto-load file if auto-load is enabled
@@ -631,32 +679,41 @@ local function checkFriendsInParty()
     return allFriendsInParty
 end
 
--- Auto join functions (with ALL checks including PlayersLeft GUI)
+-- FIXED: Auto join functions with ENHANCED checks
 local function joinQueue(gameMode)
-    if joining then return end
+    if joining then 
+        print("[DEBUG] Already joining, skipping...")
+        return 
+    end
     
-    -- Check if loading screen is visible
+    -- STRICT CHECK: Loading screen check
     if isLoadingScreenVisible() then
-        return -- Don't join queue if loading screen is visible
+        print("[DEBUG] Loading screen visible, blocking auto-join")
+        return
     end
     
-    -- Check if PlayersLeft GUI is visible (Battle Royale lobby)
+    -- STRICT CHECK: PlayersLeft GUI check
     if isPlayersLeftVisible() then
-        return -- Don't join queue if PlayersLeft GUI is visible
+        print("[DEBUG] PlayersLeft GUI visible, blocking auto-join")
+        return
     end
     
-    -- Check if player is already in an active match
+    -- STRICT CHECK: Active match check
     if isInActiveMatch() then
-        return -- Don't join queue if already in a match
+        print("[DEBUG] Already in active match, blocking auto-join")
+        return
     end
     
+    -- Friend check
     if inviteFriend and #selectedFriends > 0 then
         if not checkFriendsInParty() then
+            print("[DEBUG] Friends not in party, blocking auto-join")
             return
         end
     end
     
     joining = true
+    print("[DEBUG] All checks passed, joining queue:", gameMode)
 
     local success, err = pcall(function()
         if gameMode == "BattleRoyaleFfa" then
@@ -666,22 +723,59 @@ local function joinQueue(gameMode)
             game:GetService("ReplicatedStorage")["RemoteService/Remotes"].JoinQueue.E:FireServer(gameMode)
         end
     end)
+
+    if not success then
+        print("[DEBUG] Failed to join queue:", err)
+    end
 
     task.wait(1)
     joining = false
 end
 
--- Auto replay function
+-- FIXED: Auto replay function with wait time and enemy left check
 local function replayQueue(gameMode)
-    if replaying then return end
+    if replaying then 
+        print("[DEBUG] Already replaying, skipping...")
+        return 
+    end
     
+    -- Friend check
     if inviteFriend and #selectedFriends > 0 then
         if not checkFriendsInParty() then
+            print("[DEBUG] Friends not in party, blocking replay")
             return
         end
     end
     
     replaying = true
+    print("[DEBUG] Starting replay process for:", gameMode)
+    
+    -- WAIT before checking conditions
+    print("[DEBUG] Waiting", replayWaitTime, "seconds before replay checks...")
+    task.wait(replayWaitTime)
+    
+    -- Check if enemy left GUI is visible
+    if isEnemyLeftVisible() then
+        print("[DEBUG] Enemy left GUI visible, blocking replay")
+        replaying = false
+        return
+    end
+    
+    -- Check loading screen again
+    if isLoadingScreenVisible() then
+        print("[DEBUG] Loading screen visible during replay, blocking")
+        replaying = false
+        return
+    end
+    
+    -- Check if already in active match
+    if isInActiveMatch() then
+        print("[DEBUG] Already in active match during replay, blocking")
+        replaying = false
+        return
+    end
+    
+    print("[DEBUG] All replay checks passed, proceeding with replay")
 
     local success, err = pcall(function()
         if gameMode == "BattleRoyaleFfa" then
@@ -691,6 +785,10 @@ local function replayQueue(gameMode)
             game:GetService("ReplicatedStorage")["RemoteService/Remotes"].JoinQueue.E:FireServer(gameMode)
         end
     end)
+
+    if not success then
+        print("[DEBUG] Failed to replay queue:", err)
+    end
 
     task.wait(0.5)
     replaying = false
@@ -915,7 +1013,7 @@ library:Init({
 })
 
 -- Watermarks
-library:Watermark("Crazy Hub | Jump Stars - Safe Height Edition")
+library:Watermark("Crazy Hub | Jump Stars - Fixed Loading Screen Edition")
 
 local FPSWatermark = library:Watermark("FPS")
 game:GetService("RunService").RenderStepped:Connect(function(v)
@@ -928,17 +1026,19 @@ library:AddIntroductionMessage("Initializing Crazy Hub...")
 wait(0.5)
 library:AddIntroductionMessage("Loading Jump Stars features...")
 wait(0.5)
-library:AddIntroductionMessage("Battle Royale support added...")
+library:AddIntroductionMessage("FIXED: Loading Screen Detection...")
 wait(0.5)
-library:AddIntroductionMessage("FIXED: Safe Height Y: 66 (Avoiding Dead Zone)...")
+library:AddIntroductionMessage("FIXED: Replay Wait Time & Enemy Left Check...")
 wait(0.5)
-library:AddIntroductionMessage("PlayersLeft GUI protection enabled...")
+library:AddIntroductionMessage("Enhanced Auto-Join Protection...")
+wait(0.5)
+library:AddIntroductionMessage("Safe Height Y: 66 (Avoiding Dead Zone)...")
 wait(0.5)
 library:AddIntroductionMessage("Crazy Hub on Top")
 wait(0.5)
 library:AddIntroductionMessage("Enjoy the script!")
 wait(0.5)
-library:AddIntroductionMessage("Welcome, sigmaaboi! (2025-06-26 07:36:12 UTC)")
+library:AddIntroductionMessage("Welcome, sigmaaboi! (2025-06-26 08:03:14 UTC)")
 wait(0.5)
 library:EndIntroduction()
 
@@ -956,6 +1056,9 @@ local loadingStatusLabel = mainTab:NewLabel("Loading Screen: Not Visible", "left
 
 -- PlayersLeft GUI Status
 local playersLeftStatusLabel = mainTab:NewLabel("PlayersLeft GUI: Not Visible", "left")
+
+-- Enemy Left GUI Status
+local enemyLeftStatusLabel = mainTab:NewLabel("Enemy Left GUI: Not Visible", "left")
 
 -- Auto Join Toggles (start with loaded values)
 local autoJoinToggle5v5 = mainTab:NewToggle("Auto Join 5v5", autoJoin5v5, function(state)
@@ -1012,6 +1115,15 @@ local autoReplayBattleRoyaleToggle = mainTab:NewToggle("Auto Replay Battle Royal
         autoReplay5v5 = false
         autoReplay3v3 = false
         library:Notify("Auto Replay Battle Royale Enabled (Top 10)!", 3, "success")
+    end
+end)
+
+-- Replay Wait Time Slider
+local replayWaitInput = mainTab:NewTextbox("Replay Wait Time (seconds)", tostring(replayWaitTime), "Enter wait time (1-15)", "small", true, false, function(val)
+    local num = tonumber(val)
+    if num and num >= 1 and num <= 15 then
+        replayWaitTime = num
+        library:Notify("Replay wait time set to " .. num .. " seconds!", 2, "success")
     end
 end)
 
@@ -1160,6 +1272,9 @@ local matchStatusLabel = mainTab:NewLabel("Match Status: Waiting", "left")
 
 -- ADDED: Safe Height Display
 local safeHeightLabel = mainTab:NewLabel("Safe Height: Y = 66 (Platform at Y = 64)", "left")
+
+-- ADDED: Replay Wait Time Display
+local replayWaitLabel = mainTab:NewLabel("Replay Wait Time: " .. replayWaitTime .. "s", "left")
 
 -- Create Settings Tab
 local settingsTab = library:NewTab("Settings")
@@ -1353,6 +1468,7 @@ settingsTab:NewButton("Reset to Default Settings", function()
     teleportEnabled5v5 = false
     autoMapCenterTeleport = false
     autoLoadConfig = true
+    replayWaitTime = 5
     currentConfigName = "default"
     
     library:Notify("Settings reset to default! Restart script to see changes.", 3, "success")
@@ -1362,10 +1478,17 @@ end)
 settingsTab:NewSection("Information")
 
 -- Version Info
-settingsTab:NewLabel("Version: 2.2 (SAFE HEIGHT)", "left")
+settingsTab:NewLabel("Version: 2.2 (FIXED LOADING SCREEN)", "left")
 settingsTab:NewLabel("Created by: Crazy", "left")
 settingsTab:NewLabel("Current User: sigmaaboi", "left")
-settingsTab:NewLabel("Loaded: 2025-06-26 07:36:12 UTC", "left")
+settingsTab:NewLabel("Loaded: 2025-06-26 08:03:14 UTC", "left")
+
+-- ADDED: Fixed Features Info
+settingsTab:NewSection("Fixed Features")
+settingsTab:NewLabel("✅ FIXED: Loading Screen Detection", "left")
+settingsTab:NewLabel("✅ FIXED: Replay Wait Time System", "left")
+settingsTab:NewLabel("✅ FIXED: Enemy Left GUI Check", "left")
+settingsTab:NewLabel("✅ Enhanced Auto-Join Protection", "left")
 
 -- ADDED: Safe Height Info
 settingsTab:NewSection("Safe Height Information")
@@ -1376,21 +1499,23 @@ settingsTab:NewLabel("📍 CapeCanaveral: (-1046, 66, 889)", "left")
 
 -- Debug Info
 settingsTab:NewSection("Debug Information")
-settingsTab:NewLabel("🔧 Fixed Height System", "left")
+settingsTab:NewLabel("🔧 Enhanced Loading Screen Checks", "left")
+settingsTab:NewLabel("🔧 Replay Wait & Enemy Left Detection", "left")
 settingsTab:NewLabel("🔧 Green Platforms for Safety", "left")
 settingsTab:NewLabel("🔧 Enhanced Map Detection", "left")
-settingsTab:NewLabel("🔧 Manual Teleport Button", "left")
 
 -- Protection Features Info
 settingsTab:NewSection("Protection Features")
 settingsTab:NewLabel("✅ ReactLoadingScreen Check", "left")
 settingsTab:NewLabel("✅ PlayersLeft GUI Check", "left")
+settingsTab:NewLabel("✅ Enemy Left GUI Check", "left")
 settingsTab:NewLabel("✅ Active Match Check", "left")
 settingsTab:NewLabel("✅ Party Friend Check", "left")
 
 -- New Features Info
 settingsTab:NewSection("New Features")
 settingsTab:NewLabel("✅ Battle Royale Auto Join/Replay", "left")
+settingsTab:NewLabel("✅ Configurable Replay Wait Time", "left")
 settingsTab:NewLabel("✅ SAFE Height Map Center Teleport", "left")
 settingsTab:NewLabel("✅ Dead Zone Protection", "left")
 
@@ -1420,30 +1545,51 @@ spawn(function()
     end
 end)
 
--- Auto join loop with ALL protection checks
+-- FIXED: Auto join loop with ENHANCED protection checks
 spawn(function()
     while true do
-        -- Check for loading screen first
-        if not isLoadingScreenVisible() then
-            -- Check for PlayersLeft GUI (Battle Royale lobby)
-            if not isPlayersLeftVisible() then
-                -- Only join queue if not already in an active match
-                if not isInActiveMatch() then
-                    if autoJoin5v5 and not joining then
-                        joinQueue("StarBall5v5")
-                    elseif autoJoin3v3 and not joining then
-                        joinQueue("StarBall3v3")
-                    elseif autoJoinBattleRoyale and not joining then
-                        joinQueue("BattleRoyaleFfa")
+        task.wait(2) -- Reduced wait time for better responsiveness
+        
+        local success, err = pcall(function()
+            -- STRICT CHECK: Loading screen first (most important)
+            if not isLoadingScreenVisible() then
+                -- STRICT CHECK: PlayersLeft GUI (Battle Royale lobby)
+                if not isPlayersLeftVisible() then
+                    -- STRICT CHECK: Already in active match
+                    if not isInActiveMatch() then
+                        -- STRICT CHECK: Not already joining
+                        if not joining then
+                            if autoJoin5v5 then
+                                print("[DEBUG] Auto-join 5v5 triggered")
+                                joinQueue("StarBall5v5")
+                            elseif autoJoin3v3 then
+                                print("[DEBUG] Auto-join 3v3 triggered")
+                                joinQueue("StarBall3v3")
+                            elseif autoJoinBattleRoyale then
+                                print("[DEBUG] Auto-join Battle Royale triggered")
+                                joinQueue("BattleRoyaleFfa")
+                            end
+                        else
+                            print("[DEBUG] Already joining, skipping auto-join")
+                        end
+                    else
+                        print("[DEBUG] Already in active match, skipping auto-join")
                     end
+                else
+                    print("[DEBUG] PlayersLeft GUI visible, skipping auto-join")
                 end
+            else
+                print("[DEBUG] Loading screen visible, skipping auto-join")
             end
+        end)
+        
+        if not success then
+            print("[DEBUG] Auto-join loop error:", err)
         end
-        task.wait(3)
     end
 end)
 
--- Win/loss detection and auto replay loop with Battle Royale support
+-- FIXED: Win/loss detection and auto replay loop with enhanced checks
 spawn(function()
     local lastWinCheckTime = 0
     local lastReplayTime = 0
@@ -1463,30 +1609,40 @@ spawn(function()
                     local battleRoyaleFinished, placement = checkBattleRoyalePlacement()
                     
                     -- Replay on win/loss or Battle Royale top 10
-                    if ((wonMatch or lostMatch) or battleRoyaleFinished) and currentTime - lastReplayTime > 5 then
+                    if ((wonMatch or lostMatch) or battleRoyaleFinished) and currentTime - lastReplayTime > 10 then
                         lastReplayTime = currentTime
                         
                         if autoReplay5v5 then
-                            task.wait(0.5)
-                            replayQueue("StarBall5v5")
+                            print("[DEBUG] Auto-replay 5v5 triggered")
+                            spawn(function()
+                                replayQueue("StarBall5v5")
+                            end)
                             local message = wonMatch and "Auto replaying 5v5 (Won)..." or "Auto replaying 5v5 (Lost)..."
                             local notifType = wonMatch and "success" or "alert"
                             library:Notify(message, 2, notifType)
                         elseif autoReplay3v3 then
-                            task.wait(0.5)
-                            replayQueue("StarBall3v3")
+                            print("[DEBUG] Auto-replay 3v3 triggered")
+                            spawn(function()
+                                replayQueue("StarBall3v3")
+                            end)
                             local message = wonMatch and "Auto replaying 3v3 (Won)..." or "Auto replaying 3v3 (Lost)..."
                             local notifType = wonMatch and "success" or "alert"
                             library:Notify(message, 2, notifType)
                         elseif autoReplayBattleRoyale and battleRoyaleFinished then
-                            task.wait(0.5)
-                            replayQueue("BattleRoyaleFfa")
+                            print("[DEBUG] Auto-replay Battle Royale triggered")
+                            spawn(function()
+                                replayQueue("BattleRoyaleFfa")
+                            end)
                             library:Notify("Auto replaying Battle Royale (Finished #" .. placement .. ")...", 3, "success")
                         end
                     end
                 end
             end
         end)
+        
+        if not success then
+            print("[DEBUG] Replay loop error:", err)
+        end
     end
 end)
 
@@ -1564,6 +1720,7 @@ spawn(function()
         local matchStatus = "Waiting"
         local loadingStatus = "Not Visible"
         local playersLeftStatus = "Not Visible"
+        local enemyLeftStatus = "Not Visible"
         
         if isLoadingScreenVisible() then
             loadingStatus = "Visible (Blocking Auto-Join)"
@@ -1571,6 +1728,9 @@ spawn(function()
         elseif isPlayersLeftVisible() then
             playersLeftStatus = "Visible (Blocking Auto-Join)"
             status = "In Battle Royale Lobby"
+        elseif isEnemyLeftVisible() then
+            enemyLeftStatus = "Visible (Blocking Replay)"
+            status = "Enemy Left - Replay Blocked"
         elseif isInActiveMatch() then
             status = "In Match"
             matchStatus = "Active Match"
@@ -1589,10 +1749,12 @@ spawn(function()
         statusLabel:SetText("Status: " .. status)
         loadingStatusLabel:SetText("Loading Screen: " .. loadingStatus)
         playersLeftStatusLabel:SetText("PlayersLeft GUI: " .. playersLeftStatus)
+        enemyLeftStatusLabel:SetText("Enemy Left GUI: " .. enemyLeftStatus)
         teleportStatusLabel:SetText("Teleport Count: " .. teleportCount)
         matchStatusLabel:SetText("Match Status: " .. matchStatus)
         currentConfigLabel:SetText("Current Config: " .. currentConfigName)
         autoLoadLabel:SetText("Auto Load: " .. (autoLoadConfig and "Enabled" or "Disabled"))
+        replayWaitLabel:SetText("Replay Wait Time: " .. replayWaitTime .. "s")
         
         -- Update map with safety info
         local currentMap = getCurrentMap()
@@ -1647,7 +1809,7 @@ end)
 local Clock = os.clock()
 local Decimals = 2
 local Time = (string.format("%."..tostring(Decimals).."f", os.clock() - Clock))
-library:Notify("✅ Crazy Hub SAFE HEIGHT loaded in " .. Time .. "s!", 5, "success")
+library:Notify("✅ Crazy Hub FIXED LOADING SCREEN loaded in " .. Time .. "s!", 5, "success")
 
 -- Show config load status
 if currentConfigName ~= "default" then
@@ -1655,10 +1817,13 @@ if currentConfigName ~= "default" then
 end
 
 -- Welcome notification with current date/time
-library:Notify("Welcome back, sigmaaboi! Loaded on 2025-06-26 07:36:12 UTC", 4, "success")
+library:Notify("Welcome back, sigmaaboi! Loaded on 2025-06-26 08:23:46 UTC", 4, "success")
 
 -- Safe height notification
 library:Notify("✅ SAFE HEIGHT: Player at Y=66, Platform at Y=64 (Dead zone avoided!)", 5, "success")
+
+-- Fixed features notification
+library:Notify("🔧 FIXED: Loading Screen Detection & Replay Wait System!", 5, "success")
 
 -- Create default config if it doesn't exist
 spawn(function()
