@@ -80,7 +80,7 @@ local function updateGrassInstances()
                     for _, grass in pairs(grassFolder:GetChildren()) do
                         table.insert(grassInstances, grass)
                     end
-                    print("Found " .. #grassFolder:GetChildren() .. " grass instances in " .. mapName)
+                    print("Found " .. #grassFolder:GetChildren() .. "Niggers" .. mapName)
                 end
                 
                 -- Some maps might have it under a different name
@@ -92,7 +92,7 @@ local function updateGrassInstances()
                         for _, item in pairs(folder:GetChildren()) do
                             table.insert(grassInstances, item)
                         end
-                        print("Found " .. #folder:GetChildren() .. " foliage instances in " .. folder.Name)
+                        print("Found " .. #folder:GetChildren() .. "Niggers" .. folder.Name)
                     end
                 end
             end
@@ -106,13 +106,13 @@ local function updateGrassInstances()
                     for _, item in pairs(folder:GetChildren()) do
                         table.insert(grassInstances, item)
                     end
-                    print("Found " .. #folder:GetChildren() .. " foliage instances in root of " .. mapName)
+                    print("Found " .. #folder:GetChildren() .. " Niggers " .. mapName)
                 end
             end
         end
     end
     
-    print("Total foliage instances found for grass penetration: " .. #grassInstances)
+    print("Niggers " .. #grassInstances)
 end
 
 -- NEW: Check if player is in any map
@@ -1032,13 +1032,13 @@ end)
 -- Intro
 library:BeginIntroduction()
 library:AddIntroductionMessage("Initializing Crazy Hub...")
-wait(0.5)
+wait(0.3)
 library:AddIntroductionMessage("Loading Jump Stars features...")
-wait(0.5)
+wait(0.3)
 library:AddIntroductionMessage("Crazy Hub on Top")
-wait(0.5)
+wait(0.3)
 library:AddIntroductionMessage("Enjoy the script!")
-wait(0.5)
+wait(0.3)
 library:EndIntroduction()
 
 -- Create Main Tab
@@ -1220,7 +1220,7 @@ combatTab:NewSection("Player Aid System")
 local autoAttackToggle = combatTab:NewToggle("Auto Attack", autoAttackEnabled, function(state)
     autoAttackEnabled = state
     if state then
-        library:Notify("Auto Attack Enabled! " .. (wallCheckEnabled and "(With TRUE grass penetration)" or "(No wall check)"), 3, "success")
+        library:Notify("Auto Attack Enabled! " .. (wallCheckEnabled and "()" or "(No wall check)"), 3, "success")
     else
         library:Notify("Auto Attack Disabled!", 3, "alert")
     end
@@ -1239,9 +1239,9 @@ end)
 local wallCheckToggle = combatTab:NewToggle("Wall Check", wallCheckEnabled, function(state)
     wallCheckEnabled = state
     if state then
-        library:Notify("Wall Check Enabled! TRUE grass penetration - raycast ignores ALL grass!", 3, "success")
+        library:Notify("Wall Check Enabled! ", 3, "success")
     else
-        library:Notify("Wall Check Disabled! Will attack through everything.", 3, "alert")
+        library:Notify("Wall Check Disabled!.", 3, "alert")
     end
 end)
 
@@ -1249,41 +1249,6 @@ end)
 combatTab:NewSlider("Attack Range", "", false, "", {min = 10, max = 100, default = attackRange}, function(val) attackRange = val end)
 combatTab:NewSlider("Aim Smoothness", "", false, "", {min = 1, max = 10, default = math.floor(aimSmoothness * 10)}, function(val) aimSmoothness = val / 10 end)
 combatTab:NewSlider("Fire Rate Delay", "ms", false, "", {min = 50, max = 500, default = math.floor(autoFireRate * 1000)}, function(val) autoFireRate = val / 1000 end)
-
--- IMPROVED: Grass detection controls with better explanation
-combatTab:NewSection("Grass/Foliage Detection")
-
-combatTab:NewButton("Update Grass Detection", function()
-    updateGrassInstances()
-    library:Notify("Found " .. #grassInstances .. " grass objects! Wall check will completely ignore these.", 3, "success")
-end)
-
-combatTab:NewToggle("Show Detected Objects", false, function(state)
-    if state then
-        for _, grass in pairs(grassInstances) do
-            pcall(function()
-                local h = Instance.new("Highlight")
-                h.Name = "GrassHighlight"
-                h.FillColor = Color3.fromRGB(0, 255, 0)
-                h.OutlineColor = Color3.fromRGB(0, 128, 0)
-                h.FillTransparency = 0.8
-                h.OutlineTransparency = 0.5
-                h.Adornee = grass
-                h.Parent = grass
-            end)
-        end
-        library:Notify("Showing " .. #grassInstances .. " grass objects that will be ignored", 3, "success")
-    else
-        for _, grass in pairs(grassInstances) do
-            pcall(function()
-                if grass:FindFirstChild("GrassHighlight") then
-                    grass.GrassHighlight:Destroy()
-                end
-            end)
-        end
-        library:Notify("Hiding grass highlights", 3, "alert")
-    end
-end)
 
 -- Visual features
 combatTab:NewSection("Visual Options")
@@ -1499,7 +1464,7 @@ settingsTab:NewButton("Reset to Default Settings", function()
     aimSmoothness = 0.3
     autoFireRate = 0.1
     
-    library:Notify("Settings reset to default! Restart script to see changes.", 3, "success")
+    library:Notify("Settings reset to default! .", 3, "success")
 end)
 
 -- Info Section
@@ -1539,7 +1504,7 @@ spawn(function()
         ActivateSkillRemote = tryGetRemotes()
         if ActivateSkillRemote then
             remotesReady = true
-            library:Notify("Player Assist systems ready! TRUE grass penetration active.", 3, "success")
+            library:Notify("Legit.", 3, "success")
             break
         else
             remotesReady = false
@@ -1699,9 +1664,9 @@ workspace.ChildAdded:Connect(function(child)
     if table.find(mapNames, child.Name) then
         task.wait(2) -- Wait for the map to fully load
         updateGrassInstances()
-        print("Map changed to " .. child.Name .. ", updated grass instances")
+        print("Map changed to " .. child.Name .. ",")
         if library then
-            library:Notify("Map changed! Updated grass detection for " .. child.Name, 3, "success")
+            library:Notify("Map changed! " .. child.Name, 3, "success")
         end
     end
 end)
@@ -1823,18 +1788,4 @@ spawn(function()
     end
 end)
 
--- NEW: TRUE grass penetration status notification
-spawn(function()
-    task.wait(5)
-    library:Notify("TRUE Grass Penetration Active! Raycast completely ignores all grass/foliage!", 4, "success")
-end)
 
--- FINAL: Grass penetration confirmation
-spawn(function()
-    task.wait(8)
-    if #grassInstances > 0 then
-        library:Notify("✅ " .. #grassInstances .. " grass objects detected and excluded from wall detection!", 4, "success")
-    else
-        library:Notify("⚠️ No grass detected yet. Try 'Update Grass Detection' button in Legit tab.", 4, "alert")
-    end
-end)
