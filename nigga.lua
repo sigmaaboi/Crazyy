@@ -51,14 +51,14 @@ local mapNames = {
     "Wisteria"
 }
 
--- Predefined safe positions for maps (fallback if center calculation fails)
+-- FIXED: Predefined safe positions for maps with correct heights (Y: 66 to avoid dead zone)
 local mapSafePositions = {
-    ["CapeCanaveral"] = Vector3.new(-1044, 72, 885),
-    ["ChuninExams"] = Vector3.new(0, 50, 0),
-    ["HuecoMundo"] = Vector3.new(0, 50, 0),
-    ["Namek"] = Vector3.new(0, 50, 0),
-    ["Sandora"] = Vector3.new(0, 50, 0),
-    ["Wisteria"] = Vector3.new(0, 50, 0)
+    ["CapeCanaveral"] = Vector3.new(-1046, 66, 889),
+    ["ChuninExams"] = Vector3.new(0, 66, 0),
+    ["HuecoMundo"] = Vector3.new(0, 66, 0),
+    ["Namek"] = Vector3.new(0, 66, 0),
+    ["Sandora"] = Vector3.new(0, 66, 0),
+    ["Wisteria"] = Vector3.new(0, 66, 0)
 }
 
 -- Function to check if loading screen is visible
@@ -97,7 +97,7 @@ local function getCurrentMap()
     return nil
 end
 
--- FIXED: Function to calculate map center dynamically with better error handling
+-- FIXED: Function to calculate map center dynamically with SAFE HEIGHT (Y: 66)
 local function calculateMapCenter(mapName)
     print("[DEBUG] Calculating center for map:", mapName)
     
@@ -105,17 +105,16 @@ local function calculateMapCenter(mapName)
         local mapFolder = workspace:FindFirstChild(mapName)
         if not mapFolder then
             print("[DEBUG] Map folder not found:", mapName)
-            return nil
+            return mapSafePositions[mapName] or Vector3.new(0, 66, 0)
         end
         
         print("[DEBUG] Found map folder:", mapFolder.Name)
         
         local minX, maxX = math.huge, -math.huge
-        local minY, maxY = math.huge, -math.huge
         local minZ, maxZ = math.huge, -math.huge
         local partCount = 0
         
-        -- Recursively find all parts in the map
+        -- Recursively find all parts in the map (ignoring Y for safety)
         local function scanParts(parent, depth)
             depth = depth or 0
             if depth > 10 then return end -- Prevent infinite recursion
@@ -125,11 +124,9 @@ local function calculateMapCenter(mapName)
                     local pos = obj.Position
                     local size = obj.Size
                     
-                    -- Calculate bounds
+                    -- Calculate X and Z bounds only (ignore Y for safety)
                     minX = math.min(minX, pos.X - size.X/2)
                     maxX = math.max(maxX, pos.X + size.X/2)
-                    minY = math.min(minY, pos.Y - size.Y/2)
-                    maxY = math.max(maxY, pos.Y + size.Y/2)
                     minZ = math.min(minZ, pos.Z - size.Z/2)
                     maxZ = math.max(maxZ, pos.Z + size.Z/2)
                     
@@ -145,17 +142,17 @@ local function calculateMapCenter(mapName)
         print("[DEBUG] Scanned", partCount, "parts")
         
         if partCount > 0 then
-            -- Calculate center point
+            -- Calculate center point with FIXED SAFE HEIGHT
             local centerX = (minX + maxX) / 2
-            local centerY = math.max(maxY + 20, 100) -- Higher safety buffer
+            local centerY = 66 -- FIXED: Safe height to avoid dead zone
             local centerZ = (minZ + maxZ) / 2
             
             local center = Vector3.new(centerX, centerY, centerZ)
-            print("[DEBUG] Calculated center:", center)
+            print("[DEBUG] Calculated center with safe height:", center)
             return center
         else
             print("[DEBUG] No valid parts found, using fallback")
-            return mapSafePositions[mapName] or Vector3.new(0, 100, 0)
+            return mapSafePositions[mapName] or Vector3.new(0, 66, 0)
         end
     end)
     
@@ -164,33 +161,36 @@ local function calculateMapCenter(mapName)
         return result
     else
         print("[DEBUG] Error calculating center:", result, "- Using fallback")
-        return mapSafePositions[mapName] or Vector3.new(0, 100, 0)
+        return mapSafePositions[mapName] or Vector3.new(0, 66, 0)
     end
 end
 
--- FIXED: Function to create platform at position with better visibility
+-- FIXED: Function to create platform at position with SAFE HEIGHT
 local function createPlatform(position, mapName)
     print("[DEBUG] Creating platform at:", position, "for map:", mapName)
+    
+    -- Ensure platform is at safe height
+    local safePosition = Vector3.new(position.X, 64, position.Z) -- Platform at Y: 64, player at Y: 66
     
     local success, platform = pcall(function()
         local part = Instance.new("Part")
         part.Name = "CrazyHub_Platform_" .. (mapName or "Custom")
-        part.Size = Vector3.new(20, 2, 20) -- Bigger platform
-        part.Position = position
+        part.Size = Vector3.new(25, 2, 25) -- Even bigger platform for safety
+        part.Position = safePosition
         part.Anchored = true
         part.CanCollide = true
         part.Material = Enum.Material.ForceField
-        part.BrickColor = BrickColor.new("Electric blue")
-        part.Transparency = 0.1 -- More visible
+        part.BrickColor = BrickColor.new("Bright green") -- Green for safe zone
+        part.Transparency = 0.1
         part.Shape = Enum.PartType.Block
         part.TopSurface = Enum.SurfaceType.Smooth
         part.BottomSurface = Enum.SurfaceType.Smooth
         
-        -- Add brighter glow effect
+        -- Add safety glow effect
         local pointLight = Instance.new("PointLight")
-        pointLight.Brightness = 5
-        pointLight.Color = Color3.fromRGB(0, 255, 255)
-        pointLight.Range = 50
+        pointLight.Brightness = 6
+        pointLight.Color = Color3.fromRGB(0, 255, 0) -- Green light for safety
+        pointLight.Range = 60
         pointLight.Parent = part
         
         -- Add spinning effect
@@ -199,7 +199,7 @@ local function createPlatform(position, mapName)
         bodyAngularVelocity.MaxTorque = Vector3.new(0, math.huge, 0)
         bodyAngularVelocity.Parent = part
         
-        -- Add text label showing map name
+        -- Add text label showing map name and safety info
         if mapName then
             local billboardGui = Instance.new("BillboardGui")
             billboardGui.Size = UDim2.new(4, 0, 1, 0)
@@ -209,8 +209,8 @@ local function createPlatform(position, mapName)
             local textLabel = Instance.new("TextLabel")
             textLabel.Size = UDim2.new(1, 0, 1, 0)
             textLabel.BackgroundTransparency = 1
-            textLabel.Text = "🎯 " .. mapName .. " CENTER 🎯"
-            textLabel.TextColor3 = Color3.fromRGB(0, 255, 255)
+            textLabel.Text = "✅ " .. mapName .. " SAFE CENTER ✅\nY: 66 (SAFE ZONE)"
+            textLabel.TextColor3 = Color3.fromRGB(0, 255, 0)
             textLabel.TextScaled = true
             textLabel.Font = Enum.Font.GothamBold
             textLabel.TextStrokeTransparency = 0
@@ -219,7 +219,7 @@ local function createPlatform(position, mapName)
         end
         
         part.Parent = workspace
-        print("[DEBUG] Platform created successfully")
+        print("[DEBUG] Platform created successfully at safe height")
         return part
     end)
     
@@ -254,7 +254,7 @@ local function removePlatforms()
     return success
 end
 
--- FIXED: Function to auto teleport to current map center with better logic
+-- FIXED: Function to auto teleport to current map center with SAFE HEIGHT
 local function autoTeleportToMapCenter()
     if not autoMapCenterTeleport then return end
     
@@ -297,7 +297,7 @@ local function autoTeleportToMapCenter()
             return
         end
         
-        -- Calculate center if not cached or recalculate for accuracy
+        -- Calculate center with safe height
         local center = calculateMapCenter(currentMap)
         if not center then
             print("[DEBUG] Failed to calculate center")
@@ -317,18 +317,18 @@ local function autoTeleportToMapCenter()
         -- Wait a frame for platform to spawn
         task.wait(0.1)
         
-        -- Teleport player above the platform
-        local teleportPosition = center + Vector3.new(0, 10, 0)
+        -- FIXED: Teleport player to SAFE HEIGHT (Y: 66)
+        local teleportPosition = Vector3.new(center.X, 66, center.Z) -- Safe height
         hrp.CFrame = CFrame.new(teleportPosition)
         
         teleportCount = teleportCount + 1
         lastMapCenterTime = tick()
         
-        print("[DEBUG] Teleported to:", teleportPosition, "Platform at:", center)
+        print("[DEBUG] Teleported to SAFE HEIGHT:", teleportPosition, "Platform at:", Vector3.new(center.X, 64, center.Z))
         
         -- Show notification
         if library then
-            library:Notify("Teleported to " .. currentMap .. " center!", 3, "success")
+            library:Notify("✅ Teleported to " .. currentMap .. " center at SAFE HEIGHT (Y: 66)!", 4, "success")
         end
     end)
     
@@ -415,7 +415,7 @@ local function saveConfig(configName)
         currentConfigName = configName,
         savedBy = game.Players.LocalPlayer.Name,
         savedAt = os.time(),
-        version = "2.1"
+        version = "2.2"
     }
     
     local success, err = pcall(function()
@@ -907,7 +907,7 @@ library.acientColor = Color3.fromRGB(159, 115, 255)
 
 -- Initialize Library
 library:Init({
-    version = "2.1",
+    version = "2.2",
     title = "Crazy Hub",
     company = "Crazy Hub",
     keybind = Enum.KeyCode.RightShift,
@@ -915,7 +915,7 @@ library:Init({
 })
 
 -- Watermarks
-library:Watermark("Crazy Hub | Jump Stars - Battle Royale Edition")
+library:Watermark("Crazy Hub | Jump Stars - Safe Height Edition")
 
 local FPSWatermark = library:Watermark("FPS")
 game:GetService("RunService").RenderStepped:Connect(function(v)
@@ -930,7 +930,7 @@ library:AddIntroductionMessage("Loading Jump Stars features...")
 wait(0.5)
 library:AddIntroductionMessage("Battle Royale support added...")
 wait(0.5)
-library:AddIntroductionMessage("FIXED: Auto Map Center Teleport...")
+library:AddIntroductionMessage("FIXED: Safe Height Y: 66 (Avoiding Dead Zone)...")
 wait(0.5)
 library:AddIntroductionMessage("PlayersLeft GUI protection enabled...")
 wait(0.5)
@@ -938,7 +938,7 @@ library:AddIntroductionMessage("Crazy Hub on Top")
 wait(0.5)
 library:AddIntroductionMessage("Enjoy the script!")
 wait(0.5)
-library:AddIntroductionMessage("Welcome, sigmaaboi! (2025-06-26 07:24:21 UTC)")
+library:AddIntroductionMessage("Welcome, sigmaaboi! (2025-06-26 07:36:12 UTC)")
 wait(0.5)
 library:EndIntroduction()
 
@@ -1115,8 +1115,8 @@ local teleportToggle5v5 = mainTab:NewToggle("Auto Win (5v5)", teleportEnabled5v5
     end
 end)
 
--- FIXED: Auto Map Center Teleport Toggle (All-in-One)
-local autoMapCenterToggle = mainTab:NewToggle("🎯 Auto Map Center Teleport (FIXED)", autoMapCenterTeleport, function(state)
+-- FIXED: Auto Map Center Teleport Toggle with SAFE HEIGHT
+local autoMapCenterToggle = mainTab:NewToggle("✅ Safe Map Center Teleport (Y: 66)", autoMapCenterTeleport, function(state)
     autoMapCenterTeleport = state
     if state then 
         teleportEnabled3v3 = false
@@ -1128,7 +1128,7 @@ local autoMapCenterToggle = mainTab:NewToggle("🎯 Auto Map Center Teleport (FI
         -- Remove any existing platforms first
         removePlatforms()
         
-        library:Notify("🎯 Auto Map Center Teleport Enabled! (FIXED)", 4, "success")
+        library:Notify("✅ Safe Map Center Teleport Enabled! (Y: 66 - Avoiding Dead Zone)", 4, "success")
         
         -- Immediately teleport to current map center
         task.wait(0.5) -- Small delay to ensure everything is ready
@@ -1137,19 +1137,19 @@ local autoMapCenterToggle = mainTab:NewToggle("🎯 Auto Map Center Teleport (FI
         -- Clean up platforms when disabled
         removePlatforms()
         lastDetectedMap = nil
-        library:Notify("Auto Map Center Teleport Disabled!", 3, "alert")
+        library:Notify("Safe Map Center Teleport Disabled!", 3, "alert")
     end
 end)
 
--- ADDED: Manual teleport button for testing
-mainTab:NewButton("🚀 Manual Teleport to Map Center", function()
+-- Manual teleport button for testing
+mainTab:NewButton("🚀 Manual Teleport to Safe Map Center", function()
     if not autoMapCenterTeleport then
-        library:Notify("Enable Auto Map Center Teleport first!", 2, "error")
+        library:Notify("Enable Safe Map Center Teleport first!", 2, "error")
         return
     end
     
     autoTeleportToMapCenter()
-    library:Notify("Manual teleport triggered!", 2, "success")
+    library:Notify("Manual teleport triggered at safe height!", 2, "success")
 end)
 
 -- Current Map Display
@@ -1157,6 +1157,9 @@ local mapLabel = mainTab:NewLabel("Current Map: Unknown", "left")
 
 -- Match Status Display
 local matchStatusLabel = mainTab:NewLabel("Match Status: Waiting", "left")
+
+-- ADDED: Safe Height Display
+local safeHeightLabel = mainTab:NewLabel("Safe Height: Y = 66 (Platform at Y = 64)", "left")
 
 -- Create Settings Tab
 local settingsTab = library:NewTab("Settings")
@@ -1359,17 +1362,24 @@ end)
 settingsTab:NewSection("Information")
 
 -- Version Info
-settingsTab:NewLabel("Version: 2.1 (FIXED)", "left")
+settingsTab:NewLabel("Version: 2.2 (SAFE HEIGHT)", "left")
 settingsTab:NewLabel("Created by: Crazy", "left")
 settingsTab:NewLabel("Current User: sigmaaboi", "left")
-settingsTab:NewLabel("Loaded: 2025-06-26 07:24:21 UTC", "left")
+settingsTab:NewLabel("Loaded: 2025-06-26 07:36:12 UTC", "left")
+
+-- ADDED: Safe Height Info
+settingsTab:NewSection("Safe Height Information")
+settingsTab:NewLabel("✅ Player Teleport Height: Y = 66", "left")
+settingsTab:NewLabel("✅ Platform Height: Y = 64", "left")
+settingsTab:NewLabel("⚠️ Dead Zone Avoided: Y > 66", "left")
+settingsTab:NewLabel("📍 CapeCanaveral: (-1046, 66, 889)", "left")
 
 -- Debug Info
 settingsTab:NewSection("Debug Information")
-settingsTab:NewLabel("🔧 Auto Map Center: Enhanced Debugging", "left")
-settingsTab:NewLabel("🔧 Better Platform Visibility", "left")
-settingsTab:NewLabel("🔧 Improved Map Detection Logic", "left")
-settingsTab:NewLabel("🔧 Manual Teleport Button Added", "left")
+settingsTab:NewLabel("🔧 Fixed Height System", "left")
+settingsTab:NewLabel("🔧 Green Platforms for Safety", "left")
+settingsTab:NewLabel("🔧 Enhanced Map Detection", "left")
+settingsTab:NewLabel("🔧 Manual Teleport Button", "left")
 
 -- Protection Features Info
 settingsTab:NewSection("Protection Features")
@@ -1381,8 +1391,8 @@ settingsTab:NewLabel("✅ Party Friend Check", "left")
 -- New Features Info
 settingsTab:NewSection("New Features")
 settingsTab:NewLabel("✅ Battle Royale Auto Join/Replay", "left")
-settingsTab:NewLabel("🎯 FIXED: Auto Map Center Teleport", "left")
-settingsTab:NewLabel("✅ Dynamic Platform Creation", "left")
+settingsTab:NewLabel("✅ SAFE Height Map Center Teleport", "left")
+settingsTab:NewLabel("✅ Dead Zone Protection", "left")
 
 -- Folder Structure Info
 settingsTab:NewLabel("Hub Folder: " .. hubFolder, "left")
@@ -1520,7 +1530,7 @@ spawn(function()
     end
 end)
 
--- FIXED: Auto Map Center Teleport Loop with better timing and debug
+-- FIXED: Auto Map Center Teleport Loop with SAFE HEIGHT
 spawn(function()
     while true do
         task.wait(3) -- Check every 3 seconds
@@ -1534,7 +1544,7 @@ spawn(function()
                 
                 -- Check if map changed or enough time passed
                 if currentMap ~= lastDetectedMap or tick() - lastMapCenterTime > 15 then
-                    print("[DEBUG] Triggering auto teleport - Map:", currentMap, "Last:", lastDetectedMap)
+                    print("[DEBUG] Triggering auto teleport to SAFE HEIGHT - Map:", currentMap, "Last:", lastDetectedMap)
                     autoTeleportToMapCenter()
                 end
             else
@@ -1573,7 +1583,7 @@ spawn(function()
         elseif teleportEnabled3v3 or teleportEnabled5v5 then
             status = "Auto Teleport Active"
         elseif autoMapCenterTeleport then
-            status = "🎯 Auto Map Center Active"
+            status = "✅ Safe Map Center Active (Y: 66)"
         end
         
         statusLabel:SetText("Status: " .. status)
@@ -1584,11 +1594,11 @@ spawn(function()
         currentConfigLabel:SetText("Current Config: " .. currentConfigName)
         autoLoadLabel:SetText("Auto Load: " .. (autoLoadConfig and "Enabled" or "Disabled"))
         
-        -- Update map with debug info
+        -- Update map with safety info
         local currentMap = getCurrentMap()
         local mapText = "Current Map: " .. (currentMap or "Unknown")
         if autoMapCenterTeleport and currentMap then
-            mapText = mapText .. " 🎯"
+            mapText = mapText .. " ✅"
         end
         mapLabel:SetText(mapText)
         
@@ -1606,7 +1616,7 @@ spawn(function()
     end
 end)
 
--- Character respawn detection with map center teleport
+-- Character respawn detection with safe map center teleport
 local player = game.Players.LocalPlayer
 player.CharacterAdded:Connect(function(character)
     local success, err = pcall(function()
@@ -1620,7 +1630,7 @@ player.CharacterAdded:Connect(function(character)
             doTeleport5v5()
         elseif autoMapCenterTeleport then
             task.wait(2) -- Longer wait for character to fully load
-            print("[DEBUG] Character respawned - triggering map center teleport")
+            print("[DEBUG] Character respawned - triggering SAFE map center teleport")
             autoTeleportToMapCenter()
         end
     end)
@@ -1637,7 +1647,7 @@ end)
 local Clock = os.clock()
 local Decimals = 2
 local Time = (string.format("%."..tostring(Decimals).."f", os.clock() - Clock))
-library:Notify("🎯 Crazy Hub FIXED loaded in " .. Time .. "s!", 5, "success")
+library:Notify("✅ Crazy Hub SAFE HEIGHT loaded in " .. Time .. "s!", 5, "success")
 
 -- Show config load status
 if currentConfigName ~= "default" then
@@ -1645,7 +1655,10 @@ if currentConfigName ~= "default" then
 end
 
 -- Welcome notification with current date/time
-library:Notify("Welcome back, sigmaaboi! Loaded on 2025-06-26 07:24:21 UTC", 4, "success")
+library:Notify("Welcome back, sigmaaboi! Loaded on 2025-06-26 07:36:12 UTC", 4, "success")
+
+-- Safe height notification
+library:Notify("✅ SAFE HEIGHT: Player at Y=66, Platform at Y=64 (Dead zone avoided!)", 5, "success")
 
 -- Create default config if it doesn't exist
 spawn(function()
